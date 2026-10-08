@@ -97,8 +97,10 @@ class MSClapWrapper(AbsEncoder):
                         suffix=".wav", delete=False
                     ) as temp_file:
                         temp_files.append(temp_file.name)
-                    # write after closing the handle so soundfile owns the file
-                    sf.write(temp_file.name, array, self.sampling_rate)
+                    # write after closing the handle so soundfile owns the file;
+                    # float, because resampled audio is off the 16-bit grid and
+                    # 2023 is sensitive to that quantisation
+                    sf.write(temp_file.name, array, self.sampling_rate, subtype="FLOAT")
 
                 with torch.no_grad():
                     # Use the official msclap API that expects file paths
