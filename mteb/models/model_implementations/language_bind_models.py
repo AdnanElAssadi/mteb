@@ -424,8 +424,9 @@ class LanguageBindImageWrapper(_LanguageBindBase):
                 desc="Processing image batches",
             ):
                 images = list(batch["image"])
+                # the transform normalises three channels; grayscale / RGBA crash
                 processed = torch.stack(
-                    [self.processor.transform(img) for img in images]
+                    [self.processor.transform(img.convert("RGB")) for img in images]
                 ).to(self.device)
 
                 with torch.autocast(str(self.device), dtype=torch.bfloat16):

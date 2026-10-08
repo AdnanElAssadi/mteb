@@ -4,7 +4,9 @@ from typing import Any
 
 import numpy as np
 import pytest
+import torch
 from datasets import Dataset
+from PIL import Image
 from torch.utils.data import DataLoader
 
 from mteb.mocks.mock_tasks import MockRetrievalTask
@@ -69,3 +71,41 @@ def test_omni_text_tower_follows_task_modalities(
         hf_subset="default",
     )
     assert (out == expected).all()
+
+
+class _FakeVisionModel(torch.nn.Module):
+    def forward(self, pixel_values: torch.Tensor) -> tuple[None, torch.Tensor]:
+        return None, pixel_values.mean(dim=(-2, -1))
+
+
+@pytest.mark.parametrize("mode", ["RGB", "L", "RGBA", "P"])
+def test_image_accepts_non_rgb_images(mode: str) -> None:
+    """The LanguageBind transform normalises 3 channels; other modes used to crash."""
+    from torchvision import transforms
+
+    wrapper = lb.LanguageBindImageWrapper.__new__(lb.LanguageBindImageWrapper)
+    wrapper.device = "cpu"
+    wrapper.model = torch.nn.Module()
+    wrapper.model.vision_model = _FakeVisionModel()
+    wrapper.model.visual_projection = torch.nn.Identity()
+    wrapper.processor = type(
+        "P",
+        (),
+        {
+            "transform": transforms.Compose(
+                [
+                    transforms.ToTensor(),
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                ]
+            )
+        },
+    )()
+    image = Image.new("RGB", (8, 8), (200, 100, 50)).convert(mode)
+    out = wrapper.get_image_embeddings(
+        DataLoader(
+            [{"image": image}],
+            collate_fn=lambda rows: {"image": [r["image"] for r in rows]},
+        ),
+        show_progress_bar=False,
+    )
+    assert out.shape == (1, 3)
