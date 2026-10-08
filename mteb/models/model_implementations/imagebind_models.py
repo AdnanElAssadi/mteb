@@ -116,7 +116,10 @@ class ImageBindWrapper(AbsEncoder):
                 waveform = torchaudio.functional.resample(
                     waveform, orig_freq=sr, new_freq=sample_rate
                 )
-            min_len = 2 * sample_rate
+            # waveform2melspec zero-pads short clips on the fbank itself, as
+            # the official loader relies on; only the kaldi fbank's single 25 ms
+            # window is a hard minimum (the official loader crashes below it)
+            min_len = int(0.025 * sample_rate)
             if waveform.shape[1] < min_len:
                 waveform = torch.nn.functional.pad(
                     waveform, (0, min_len - waveform.shape[1])
