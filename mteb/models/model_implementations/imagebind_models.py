@@ -156,8 +156,12 @@ class ImageBindWrapper(AbsEncoder):
 
             outputs = self.model(inputs)
 
+            # the postprocessors leave text at norm 100, audio at ~20 and vision
+            # at 1, so a raw sum is just the text embedding; normalise each
+            # modality first, as ImageBind's own embedding arithmetic does
             embeddings = None
             for emb in outputs.values():
+                emb = torch.nn.functional.normalize(emb, p=2, dim=-1)  # noqa: PLW2901
                 embeddings = emb if embeddings is None else embeddings + emb
 
             return torch.nn.functional.normalize(embeddings, p=2, dim=-1)
