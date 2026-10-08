@@ -133,6 +133,11 @@ class MSClapWrapper(AbsEncoder):
             inputs, disable=not show_progress_bar, desc="Processing text batches"
         ):
             texts = batch["text"]
+            # msclap appends this for the GPT-2 text encoder (2023), which pools
+            # on it; BERT (2022) gets no suffix
+            # https://github.com/microsoft/CLAP/blob/main/msclap/CLAPWrapper.py
+            if "gpt" in self.model.args.text_model:
+                texts = [text + " <|endoftext|>" for text in texts]
 
             features = self.tokenizer(
                 texts,
