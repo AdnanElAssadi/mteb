@@ -29,6 +29,7 @@ def vggish_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
     import torchaudio
     from torch_vggish_yamnet import vggish
     from torch_vggish_yamnet.input_proc import WaveformToInput
+    from torch_vggish_yamnet.params import CommonParams
 
     class VGGishWrapper(AbsEncoder):
         def __init__(
@@ -47,6 +48,10 @@ def vggish_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
             self.device = device
             self.max_audio_length_seconds = max_audio_length_seconds
             self.model = vggish.get_vggish(with_classifier=False, pretrained=True)
+            # the official embedding layer (fc2) has no activation; the port
+            # appends a ReLU that zeroes about half of the embedding values
+            # https://github.com/tensorflow/models/blob/master/research/audioset/vggish/vggish_slim.py
+            self.model.embeddings = self.model.embeddings[:-1]
             self.model.eval().to(self.device)
 
             self.converter = WaveformToInput()
@@ -102,9 +107,17 @@ def vggish_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
             if audio_data.ndim == 1:
                 audio_data = audio_data.unsqueeze(0)
 
-            input_tensor = self.converter(audio_data.float(), self.sampling_rate).to(
-                self.device
-            )
+            # the port shares LOG_OFFSET (0.001, YAMNet's value) between both
+            # models; VGGish uses 0.01, so set it only for this call
+            # https://github.com/tensorflow/models/blob/master/research/audioset/vggish/vggish_params.py
+            log_offset = CommonParams.LOG_OFFSET
+            CommonParams.LOG_OFFSET = 0.01
+            try:
+                input_tensor = self.converter(
+                    audio_data.float(), self.sampling_rate
+                ).to(self.device)
+            finally:
+                CommonParams.LOG_OFFSET = log_offset
 
             # Handle different tensor dimensions
             if input_tensor.dim() == 4 and input_tensor.shape[1] == 3:
