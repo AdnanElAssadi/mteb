@@ -185,3 +185,21 @@ def test_audio_collator_rejects_non_positive_cap() -> None:
     audio = {"array": [0.0] * 10, "sampling_rate": 16_000}
     with pytest.raises(ValueError, match="must be positive"):
         AudioCollator.resample_audio(audio, target_sampling_rate=16_000, max_samples=0)
+
+
+def test_sentence_transformer_dicts_carry_video_metadata() -> None:
+    from mteb.models.sentence_transformer_wrapper import _batch_to_modality_dicts
+
+    rows = [{"video": _StubDecoder(30, seconds=1.2), "text": "a", "id": "x"}]
+    batch = VideoCollator(target_sampling_rate=16_000, fps=1.0, with_metadata=True)(
+        rows
+    )
+    (sample,) = _batch_to_modality_dicts(batch, ["video", "text"])
+    assert sample["text"] == "a"
+    assert sample["video"]["array"] == [0, 10, 19, 29]
+    assert sample["video"]["video_metadata"]["fps"] == 25.0
+
+    rows = [{"video": _StubDecoder(30, seconds=1.2), "text": "a"}]
+    batch = VideoCollator(target_sampling_rate=16_000, fps=1.0)(rows)
+    (sample,) = _batch_to_modality_dicts(batch, ["video", "text"])
+    assert sample["video"] == [0, 10, 19, 29]
