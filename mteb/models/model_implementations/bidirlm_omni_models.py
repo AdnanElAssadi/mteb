@@ -206,6 +206,7 @@ class BidirLMOmniEncoder(AbsEncoder):
                 max_frames=self.max_frames,
                 num_frames=self.num_frames,
                 max_samples=self.max_samples,
+                with_metadata=True,
             )
         elif has_audio:
             inputs.collate_fn = AudioCollator(
@@ -232,6 +233,13 @@ class BidirLMOmniEncoder(AbsEncoder):
                     for key in modality_keys
                     if key in batch and batch[key][i] is not None
                 }
+                if "video" in row and batch.get("video_metadata") is not None:
+                    # real source fps and frame indices, so the Qwen3-VL processor
+                    # renders the true timestamps instead of assuming 24 fps
+                    row["video"] = {
+                        "array": row["video"],
+                        "video_metadata": batch["video_metadata"][i],
+                    }
                 batch_inputs.append(row)
 
             embeddings = self.model.encode(
