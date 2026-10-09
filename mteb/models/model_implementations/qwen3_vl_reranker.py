@@ -18,6 +18,31 @@ if TYPE_CHECKING:
 DEFAULT_INSTRUCTION = "Retrieve images or text relevant to the user's query."
 
 
+def _snapshot_with_module_paths(
+    model: str, revision: str | None, module_paths: dict[str, str]
+) -> str:
+    """Return a local view of the checkpoint whose modules.json uses corrected module paths.
+
+    Every file is symlinked from the Hugging Face cache snapshot; only modules.json is rewritten.
+    """
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from huggingface_hub import snapshot_download
+
+    snapshot = Path(snapshot_download(model, revision=revision))
+    modules = json.loads((snapshot / "modules.json").read_text())
+    for module in modules:
+        module["path"] = module_paths.get(module["path"], module["path"])
+    local = Path(tempfile.mkdtemp(prefix=f"mteb_{model.replace('/', '__')}_"))
+    for entry in snapshot.iterdir():
+        if entry.name != "modules.json":
+            (local / entry.name).symlink_to(entry)
+    (local / "modules.json").write_text(json.dumps(modules, indent=2))
+    return str(local)
+
+
 QWEN3_VL_LANGUAGES = [
     "eng-Latn",
     "cmn-Hans",
@@ -68,7 +93,7 @@ class Qwen3VLRerankerWrapper(CrossEncoderWrapper):
     Reference implementation: https://github.com/QwenLM/Qwen3-VL-Embedding
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         model: str,
         revision: str | None = None,
@@ -82,8 +107,13 @@ class Qwen3VLRerankerWrapper(CrossEncoderWrapper):
         max_frames: int | None = 64,
         num_frames: int | None = None,
         use_instructions: bool = True,
+        *,
+        module_paths: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
+        if module_paths:
+            model = _snapshot_with_module_paths(model, revision, module_paths)
+            revision = None
         # Default to the checkpoint's own preprocessor_config.json. Forcing a
         # pixel budget changes how images are resized and measurably shifts
         # scores away from the reference implementation, so it is opt-in only
@@ -191,6 +221,11 @@ qwen3_vl_reranker_2b = ModelMeta(
 
 qwen3_vl_reranker_8b = ModelMeta(
     loader=Qwen3VLRerankerWrapper,
+    # modules.json at this revision points module 1 to "1_CausalScoreHead", but the repo ships
+    # "1_LogitScore/config.json" (renamed in the ST integration PR, path not updated), so every
+    # sentence-transformers version builds LogitScore() without its token ids and fails.
+    # https://huggingface.co/Qwen/Qwen3-VL-Reranker-8B/blob/b212dc8c91a8164aef1ea2de9c1a867611e75c04/modules.json
+    loader_kwargs={"module_paths": {"1_CausalScoreHead": "1_LogitScore"}},
     name="Qwen/Qwen3-VL-Reranker-8B",
     model_type=["cross-encoder"],
     languages=QWEN3_VL_LANGUAGES,
