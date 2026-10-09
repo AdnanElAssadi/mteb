@@ -668,3 +668,35 @@ def test_get_model_metas_iso_code_matches_language_script():
 def test_get_model_metas_invalid_language():
     with pytest.raises(ValueError, match="Invalid language code"):
         mteb.get_model_metas(languages=["english"])
+
+
+@pytest.mark.parametrize(
+    ("model_name", "config_key"),
+    [
+        ("Qwen/Qwen2-Audio-7B", "text_config.hidden_size"),
+        ("facebook/wav2vec2-xls-r-1b", "hidden_size"),
+        ("facebook/wav2vec2-xls-r-2b", "hidden_size"),
+        ("facebook/mms-1b-all", "hidden_size"),
+        ("facebook/mms-1b-fl102", "hidden_size"),
+        ("facebook/mms-1b-l1107", "hidden_size"),
+        ("asapp/sew-d-tiny-100k-ft-ls100h", "hidden_size"),
+        ("asapp/sew-d-mid-400k-ft-ls100h", "hidden_size"),
+        ("openai/whisper-tiny", "d_model"),
+        # remote-code config; the wrappers return the default MRL size
+        ("EximiusLabs/fusion-embedding-1-2b-preview", "mrl_default"),
+        ("EximiusLabs/fusion-embedding-2-2b-preview", "mrl_default"),
+    ],
+)
+def test_audio_model_embed_dim_matches_hub_config(model_name: str, config_key: str):
+    """embed_dim must be the width of the pooled hidden state the wrapper returns."""
+    from transformers import AutoConfig, PretrainedConfig
+
+    meta = mteb.get_model_meta(model_name)
+    if config_key == "mrl_default":
+        config, _ = PretrainedConfig.get_config_dict(model_name, revision=meta.revision)
+        expected = config[config_key]
+    else:
+        expected = AutoConfig.from_pretrained(model_name, revision=meta.revision)
+        for key in config_key.split("."):
+            expected = getattr(expected, key)
+    assert meta.embed_dim == expected
