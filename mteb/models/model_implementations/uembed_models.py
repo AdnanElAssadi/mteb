@@ -10,6 +10,7 @@ classes. This adapter limits the public interface to ``last.normal`` and
 from __future__ import annotations
 
 import json
+import math
 import unicodedata
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -45,6 +46,11 @@ MAX_PIXELS = 1800 * IMAGE_FACTOR * IMAGE_FACTOR
 # https://github.com/Alibaba-NLP/UEmbed/blob/main/src/models/qwen35_embedding.py
 DEFAULT_FPS = 1.0
 DEFAULT_MAX_FRAMES = 64
+# Video resize budget of UEmbed's qwen35_embedding.py (frame-list inputs, via qwen-vl-utils):
+# per frame >= 128 and <= 768 merged tokens, and <= MAX_TOTAL_PIXELS over the clip.
+VIDEO_FRAME_MIN_PIXELS = 128 * IMAGE_FACTOR * IMAGE_FACTOR
+VIDEO_FRAME_MAX_PIXELS = 768 * IMAGE_FACTOR * IMAGE_FACTOR
+MAX_TOTAL_PIXELS = 10 * VIDEO_FRAME_MAX_PIXELS
 SPARSE_DIM = 184_016
 
 _HUB_DOWNLOAD_KWARGS = (
@@ -352,6 +358,40 @@ class _UEmbedInference:
         )
         return conversation, pil_images, video_frames
 
+    @staticmethod
+    def _resize_video(video: torch.Tensor) -> torch.Tensor:
+        """Pad to an even frame count and resize as qwen-vl-utils' fetch_video does."""
+        import torch
+        from torchvision.transforms.functional import InterpolationMode, resize
+
+        if len(video) % 2:
+            video = torch.cat([video, video[-1:]])
+        nframes, _, height, width = video.shape
+        max_pixels = max(
+            min(VIDEO_FRAME_MAX_PIXELS, MAX_TOTAL_PIXELS / nframes * 2),
+            int(VIDEO_FRAME_MIN_PIXELS * 1.05),
+        )
+        h_bar = max(IMAGE_FACTOR, round(height / IMAGE_FACTOR) * IMAGE_FACTOR)
+        w_bar = max(IMAGE_FACTOR, round(width / IMAGE_FACTOR) * IMAGE_FACTOR)
+        if h_bar * w_bar > max_pixels:
+            beta = math.sqrt((height * width) / max_pixels)
+            h_bar = max(
+                IMAGE_FACTOR, math.floor(height / beta / IMAGE_FACTOR) * IMAGE_FACTOR
+            )
+            w_bar = max(
+                IMAGE_FACTOR, math.floor(width / beta / IMAGE_FACTOR) * IMAGE_FACTOR
+            )
+        elif h_bar * w_bar < VIDEO_FRAME_MIN_PIXELS:
+            beta = math.sqrt(VIDEO_FRAME_MIN_PIXELS / (height * width))
+            h_bar = math.ceil(height * beta / IMAGE_FACTOR) * IMAGE_FACTOR
+            w_bar = math.ceil(width * beta / IMAGE_FACTOR) * IMAGE_FACTOR
+        return resize(
+            video,
+            [h_bar, w_bar],
+            interpolation=InterpolationMode.BICUBIC,
+            antialias=True,
+        ).float()
+
     def _preprocess_inputs(
         self,
         conversations: list[list[dict[str, Any]]],
@@ -360,6 +400,8 @@ class _UEmbedInference:
         videos_metadata: list[VideoFrameMetadata | None] | None = None,
     ) -> dict[str, torch.Tensor]:
         from transformers.video_utils import VideoMetadata
+
+        videos = [self._resize_video(video) for video in videos]
 
         text = self.processor.apply_chat_template(
             conversations,
@@ -385,6 +427,7 @@ class _UEmbedInference:
             images=images or None,
             videos=videos or None,
             video_metadata=video_metadata or None,
+            videos_kwargs={"do_resize": False},
             truncation=True,
             max_length=self.max_length,
             padding=True,
