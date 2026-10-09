@@ -29,7 +29,6 @@ def yamnet_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
     """Factory function to create a YAMNet model wrapper."""
     import torch
     from torch_vggish_yamnet import yamnet
-    from torch_vggish_yamnet.input_proc import WaveformToInput
 
     class YAMNetWrapper(AbsEncoder):
         def __init__(
@@ -50,8 +49,15 @@ def yamnet_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
             self.model = yamnet.yamnet(pretrained=True)
             self.model.eval().to(self.device)
 
-            self.converter = WaveformToInput()
             self.sampling_rate = 16000  # YAMNet requires 16kHz audio
+            # official log-mel front end (yamnet/features.py): the port's
+            # torchaudio MelSpectrogram centres (reflect-pads) its STFT frames
+            # and builds its mel filterbank slightly differently
+            self.stft_window = torch.hann_window(400, periodic=True)  # 25 ms
+            self.stft_hop = 160  # 10 ms
+            self.fft_length = 512
+            self.mel_matrix = torch.from_numpy(_linear_to_mel_weight_matrix()).float()
+            self.log_offset = 0.001
             self.embed_dim = 1024  # YAMNet embedding dimension
             # official patching: 0.96 s patches with a 0.48 s hop, the waveform
             # padded to one full patch and then to a whole number of hops
@@ -103,6 +109,13 @@ def yamnet_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
 
             return audio
 
+        def _log_mel(self, audio: torch.Tensor) -> torch.Tensor:
+            """Log-mel spectrogram [frames, mels] as tf.signal.stft (no centring)."""
+            frames = audio.unfold(-1, len(self.stft_window), self.stft_hop)
+            magnitude = torch.fft.rfft(frames * self.stft_window, n=self.fft_length)
+            mel = magnitude.abs() @ self.mel_matrix
+            return torch.log(mel + self.log_offset)
+
         def _prepare_input_tensor(self, audio_data: Array) -> torch.Tensor | None:
             """Convert audio to YAMNet input format and handle tensor dimensions."""
             if isinstance(audio_data, np.ndarray):
@@ -111,9 +124,9 @@ def yamnet_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
             if audio_data.ndim == 1:
                 audio_data = audio_data.unsqueeze(0)
 
-            # [1, mels, frames] -> [frames, mels]; the port's own WaveformToInput
-            # cuts patches with a 0.96 s hop, so cut them here with 0.48 s
-            log_mel = self.converter.mel_trans_ope(audio_data.float()).squeeze(0).T
+            # [frames, mels]; the port's own WaveformToInput cuts patches with a
+            # 0.96 s hop, so cut them here with 0.48 s
+            log_mel = self._log_mel(audio_data.float().squeeze(0))
             patches = log_mel.unfold(0, self.patch_frames, self.patch_hop_frames)
             # [patches, mels, frames] -> [patches, 1, frames, mels]
             input_tensor = patches.transpose(1, 2).unsqueeze(1).to(self.device)
@@ -194,6 +207,38 @@ def yamnet_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
             return self.get_audio_embeddings(inputs, **kwargs)
 
     return YAMNetWrapper(**kwargs)
+
+
+def _linear_to_mel_weight_matrix(
+    num_mel_bins: int = 64,
+    num_spectrogram_bins: int = 257,
+    sample_rate: float = 16000.0,
+    lower_edge_hertz: float = 125.0,
+    upper_edge_hertz: float = 7500.0,
+) -> np.ndarray:
+    """NumPy port of tf.signal.linear_to_mel_weight_matrix (HTK mel, DC bin zeroed)."""
+
+    def hertz_to_mel(hertz: np.ndarray) -> np.ndarray:
+        return 1127.0 * np.log1p(hertz / 700.0)
+
+    linear_frequencies = np.linspace(0.0, sample_rate / 2.0, num_spectrogram_bins)[1:]
+    spectrogram_bins_mel = hertz_to_mel(linear_frequencies)[:, None]
+    band_edges_mel = np.linspace(
+        hertz_to_mel(lower_edge_hertz),
+        hertz_to_mel(upper_edge_hertz),
+        num_mel_bins + 2,
+    )
+    lower_edge_mel = band_edges_mel[:-2]
+    center_mel = band_edges_mel[1:-1]
+    upper_edge_mel = band_edges_mel[2:]
+    lower_slopes = (spectrogram_bins_mel - lower_edge_mel) / (
+        center_mel - lower_edge_mel
+    )
+    upper_slopes = (upper_edge_mel - spectrogram_bins_mel) / (
+        upper_edge_mel - center_mel
+    )
+    mel_weights = np.maximum(0.0, np.minimum(lower_slopes, upper_slopes))
+    return np.pad(mel_weights, [[1, 0], [0, 0]])
 
 
 yamnet = ModelMeta(
