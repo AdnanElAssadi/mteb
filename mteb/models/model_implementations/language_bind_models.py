@@ -209,6 +209,9 @@ class LanguageBindVideoWrapper(_LanguageBindBase):
                 max_frames=self.max_frames,
                 num_frames=self.num_frames,
                 max_samples=self.max_samples,
+                # torchaudio.functional.resample with its default filter
+                # https://github.com/PKU-YuanGroup/LanguageBind/blob/main/languagebind/audio/processing_audio.py
+                resampling="torchaudio_default",
             )
 
             for batch in tqdm(
