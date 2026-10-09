@@ -7506,7 +7506,7 @@ requires-dist = [
     { name = "flash-attn", marker = "extra == 'llama-nemotron-embed-vl-1b-v2'", specifier = ">=2.6.3" },
     { name = "flash-attn", marker = "extra == 'nemotron-colembed-vl-v2'", specifier = ">=2.6.3" },
     { name = "flash-linear-attention", marker = "extra == 'topk-embed'", specifier = ">=0.5.1" },
-    { name = "google-genai", marker = "extra == 'google-genai'", specifier = ">=1.7.0" },
+    { name = "google-genai", marker = "extra == 'google-genai'", specifier = ">=1.72.0" },
     { name = "gradio", marker = "extra == 'leaderboard'", specifier = "==6.0.1" },
     { name = "gritlm", marker = "extra == 'gritlm'", specifier = ">=1.0.2" },
     { name = "huggingface-hub", marker = "extra == 'xet'", specifier = ">=0.32.0" },
