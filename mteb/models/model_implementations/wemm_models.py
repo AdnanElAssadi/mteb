@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
+from mteb.models.modality_collators import sampled_fps
 from mteb.models.model_meta import ModelMeta, ScoringFunction
 from mteb.models.sentence_transformer_wrapper import (
     SentenceTransformerEncoderWrapper,
@@ -11,6 +12,7 @@ if TYPE_CHECKING:
     from torch.utils.data import DataLoader
 
     from mteb.abstasks.task_metadata import TaskMetadata
+    from mteb.models.modality_collators import VideoFrameMetadata
     from mteb.types import Array, BatchedInput, PromptType
 
 
@@ -43,6 +45,7 @@ class WeMMEncoderWrapper(SentenceTransformerEncoderWrapper):
                 fps=self.fps,
                 max_frames=self.max_frames,
                 num_frames=self.num_frames,
+                with_metadata=True,
             )
 
         instruction = self.get_task_instruction(task_metadata, prompt_type)
@@ -53,6 +56,7 @@ class WeMMEncoderWrapper(SentenceTransformerEncoderWrapper):
             texts = batch.get("text")
             images = batch.get("image")
             videos = batch.get("video")
+            videos_metadata = batch.get("video_metadata")
 
             if videos is not None:
                 videos = [
@@ -83,6 +87,8 @@ class WeMMEncoderWrapper(SentenceTransformerEncoderWrapper):
                         sample["video"] = videos[i]
                     if text_content:
                         sample["text"] = text_content
+                    if "video" in sample and videos_metadata:
+                        sample = _video_message(sample, videos_metadata[i])
                     batched_input.append(sample)
                 else:
                     batched_input.append(text_content)
@@ -91,6 +97,26 @@ class WeMMEncoderWrapper(SentenceTransformerEncoderWrapper):
             all_embeddings.append(embeddings)
 
         return cast("Array", np.concatenate(all_embeddings, axis=0))
+
+
+def _video_message(
+    sample: dict[str, Any], metadata: VideoFrameMetadata
+) -> list[dict[str, Any]]:
+    """The chat message sentence-transformers builds from ``sample``, plus `sample_fps`.
+
+    The remote module prepares frame lists with qwen-vl-utils, which times frame
+    i at ``i / sample_fps`` (default 2.0) when building the frame timestamps.
+    Pass the rate qwen-vl-utils itself reports for a decoded video,
+    ``nframes / total_frames * video_fps``, so normal clips keep exactly 2.0.
+    """
+    rate = sampled_fps(metadata) or 2.0
+    content: list[dict[str, Any]] = []
+    for modality, value in sample.items():
+        item = {"type": modality, modality: value}
+        if modality == "video":
+            item["sample_fps"] = rate
+        content.append(item)
+    return [{"role": "user", "content": content}]
 
 
 # --- Private module-level constants ---
