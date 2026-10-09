@@ -8,7 +8,11 @@ from tqdm.auto import tqdm
 
 from mteb.models import ModelMeta
 from mteb.models.abs_encoder import AbsEncoder
-from mteb.models.modality_collators import check_duration_cap, single_clip_dataloader
+from mteb.models.modality_collators import (
+    AudioCollator,
+    check_duration_cap,
+    single_clip_dataloader,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +79,6 @@ class SpeechT5Audio(AbsEncoder):
         **kwargs: Any,
     ) -> Array:
         import torch
-        import torchaudio
 
         all_embeddings = []
 
@@ -99,10 +102,14 @@ class SpeechT5Audio(AbsEncoder):
                     sr = self.sampling_rate
 
                 if sr != self.sampling_rate:
-                    resampler = torchaudio.transforms.Resample(
-                        orig_freq=sr, new_freq=self.sampling_rate
+                    # the card feeds `datasets` audio, which resamples with
+                    # librosa/soxr; the collator default is closest to it
+                    array = torch.from_numpy(
+                        AudioCollator.resample_audio(
+                            {"audio": {"array": array.numpy(), "sampling_rate": sr}},
+                            target_sampling_rate=self.sampling_rate,
+                        )
                     )
-                    array = resampler(array)
                 batch_arrays.append(array.numpy())
 
             if batch_arrays[0].ndim == 0:
