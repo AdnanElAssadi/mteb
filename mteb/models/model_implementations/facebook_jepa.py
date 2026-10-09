@@ -30,7 +30,12 @@ class VJepaV2Wrapper(AbsEncoder):
         **kwargs: Any,
     ) -> None:
         import torch
-        from transformers import AutoModel, AutoVideoProcessor
+        from transformers import (
+            AutoConfig,
+            AutoModel,
+            AutoVideoProcessor,
+            VJEPA2ForVideoClassification,
+        )
 
         self.device = device or (
             "cuda"
@@ -48,7 +53,20 @@ class VJepaV2Wrapper(AbsEncoder):
         self.max_frames = max_frames
         self.num_frames = num_frames
 
-        self.model = AutoModel.from_pretrained(model_name, revision=revision)
+        # The classifier checkpoints (SSv2, Diving48) keep the frozen pretrained backbone; what
+        # they add is a trained attentive pooler, so embed with it (the classifier's input).
+        # Mean pooling the backbone would make them duplicates of the pretrained checkpoints.
+        config = AutoConfig.from_pretrained(model_name, revision=revision)
+        self.pooler = None
+        if "VJEPA2ForVideoClassification" in (config.architectures or []):
+            classifier = VJEPA2ForVideoClassification.from_pretrained(
+                model_name, revision=revision
+            )
+            self.model, self.pooler = classifier.vjepa2, classifier.pooler
+            self.pooler.eval()
+            self.pooler.to(self.device)
+        else:
+            self.model = AutoModel.from_pretrained(model_name, revision=revision)
         self.model.eval()
         self.model.to(self.device)
 
@@ -89,8 +107,12 @@ class VJepaV2Wrapper(AbsEncoder):
                     return_tensors="pt",
                 ).to(self.device)
 
-                outputs = self.model(**processed_videos)
-                pooled = outputs.last_hidden_state.mean(dim=1)
+                # The predictor is only used for pretraining; it does not change the encoder output.
+                outputs = self.model(**processed_videos, skip_predictor=True)
+                if self.pooler is not None:
+                    pooled = self.pooler(outputs.last_hidden_state)
+                else:
+                    pooled = outputs.last_hidden_state.mean(dim=1)
                 embeddings.append(pooled.cpu())
             return torch.cat(embeddings, dim=0).numpy()
 
