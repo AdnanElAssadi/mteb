@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from torch.utils.data import DataLoader
 
     from mteb.abstasks.task_metadata import TaskMetadata
+    from mteb.models.modality_collators import VideoFrameMetadata
     from mteb.types import Array, BatchedInput, PromptType
     from mteb.types._encoder_io import AudioInputItem
 
@@ -86,15 +87,40 @@ class OmniVinciWrapper(AbsEncoder):
         self.processor.config.load_audio_in_video = False
 
     @staticmethod
-    def _save_frames_as_video(frames: torch.Tensor) -> str:
-        """Write a ``(T, C, H, W)`` uint8 tensor to a temporary MP4 file."""
+    def _save_frames_as_video(
+        frames: torch.Tensor, metadata: VideoFrameMetadata | None = None
+    ) -> str:
+        """Write a ``(T, C, H, W)`` uint8 tensor to a temporary MP4 file.
+
+        The video encoder adds time embeddings from ``frame_index / fps`` of
+        this file, so it is written at the rate the frames are spaced in the
+        source clip (24 fps without metadata).
+        """
+        from fractions import Fraction
+
         import torchvision
+
+        fps: float | Fraction = 24
+        indices = metadata["frames_indices"] if metadata else []
+        if (
+            metadata
+            and metadata["fps"]
+            and len(indices) > 1
+            and indices[-1] > indices[0]
+        ):
+            spacing_fps = (
+                (len(indices) - 1) * metadata["fps"] / (indices[-1] - indices[0])
+            )
+            # a Fraction: write_video rounds float rates to integers
+            fps = Fraction(spacing_fps).limit_denominator(1001)
 
         fd, path = tempfile.mkstemp(suffix=".mp4")
         os.close(fd)
         # torchvision.io.write_video expects (T, H, W, C) uint8
         torchvision.io.write_video(
-            path, frames.permute(0, 2, 3, 1).contiguous(), fps=24
+            path,
+            frames.permute(0, 2, 3, 1).contiguous(),
+            fps=fps,  # type: ignore[arg-type]
         )
         return path
 
@@ -144,6 +170,7 @@ class OmniVinciWrapper(AbsEncoder):
         images = batch.get("image", [])
         audios = batch.get("audio", [])
         videos = batch.get("video", [])
+        videos_metadata = batch.get("video_metadata") or [None] * len(videos)
         batch_size = max(len(texts), len(images), len(audios), len(videos))
 
         conversations = []
@@ -152,7 +179,7 @@ class OmniVinciWrapper(AbsEncoder):
             content: list[dict[str, Any]] = []
 
             if i < len(videos) and videos[i] is not None:
-                path = self._save_frames_as_video(videos[i])
+                path = self._save_frames_as_video(videos[i], videos_metadata[i])
                 temp_files.append(path)
                 content.append({"type": "video", "video": path})
 
@@ -262,6 +289,7 @@ class OmniVinciWrapper(AbsEncoder):
                     target_sampling_rate=self.AUDIO_SAMPLING_RATE,
                     num_frames=self.num_frames,
                     max_samples=self.max_audio_samples,
+                    with_metadata=True,
                 )
                 if has_audio:
                     inputs = single_clip_dataloader(
