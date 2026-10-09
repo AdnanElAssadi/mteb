@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import unicodedata
 from typing import TYPE_CHECKING, Any
 
@@ -12,6 +13,8 @@ from mteb.models.model_meta import ModelMeta
 from mteb.models.sentence_transformer_wrapper import CrossEncoderWrapper
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     from torch.utils.data import DataLoader
 
     from mteb.abstasks.task_metadata import TaskMetadata
@@ -21,6 +24,71 @@ DEFAULT_INSTRUCTION = "Retrieve images or text relevant to the user's query."
 # MAX_TOTAL_PIXELS of the official script: 4 frames of 1280 tokens, times FRAME_FACTOR
 # https://huggingface.co/Qwen/Qwen3-VL-Reranker-2B/blob/main/scripts/qwen3_vl_reranker.py
 VIDEO_MAX_TOTAL_PIXELS = 4 * 2 * 1280 * IMAGE_FACTOR * IMAGE_FACTOR
+
+
+def _snapshot_with_module_paths(
+    model: str, revision: str | None, module_paths: dict[str, str]
+) -> str:
+    """Return a local view of the checkpoint whose modules.json uses corrected module paths.
+
+    Every file is symlinked from the Hugging Face cache snapshot; only modules.json is rewritten.
+    """
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from huggingface_hub import snapshot_download
+
+    snapshot = Path(snapshot_download(model, revision=revision))
+    modules = json.loads((snapshot / "modules.json").read_text())
+    for module in modules:
+        module["path"] = module_paths.get(module["path"], module["path"])
+    local = Path(tempfile.mkdtemp(prefix=f"mteb_{model.replace('/', '__')}_"))
+    for entry in snapshot.iterdir():
+        if entry.name != "modules.json":
+            (local / entry.name).symlink_to(entry)
+    (local / "modules.json").write_text(json.dumps(modules, indent=2))
+    return str(local)
+
+
+def _pass_pair_video_metadata(
+    preprocess: Callable[..., dict[str, Any]],
+) -> Callable[..., dict[str, Any]]:
+    """Wrap `CrossEncoder.preprocess` so videos in query/document pairs keep their frame timing.
+
+    sentence-transformers (6.1) unwraps `{"array": frames, "video_metadata": ...}` only for single
+    inputs, not inside pairs (the dict reaches `make_batched_videos` and fails). Unwrap the frames
+    here and pass the metadata through the per-call `processing_kwargs` instead. The processor
+    collects the videos of each pair in query, document order, and so does this list.
+    """
+
+    @functools.wraps(preprocess)
+    def wrapped(inputs: Sequence[object], *args: Any, **kwargs: Any) -> dict[str, Any]:
+        metadata: list[Any] = []
+
+        def unwrap(side: object) -> object:
+            video = side.get("video") if isinstance(side, dict) else None
+            if not isinstance(video, dict):
+                if video is not None:
+                    metadata.append(None)
+                return side
+            metadata.append(video["video_metadata"])
+            return {k: video["array"] if k == "video" else v for k, v in side.items()}
+
+        inputs = [
+            tuple(unwrap(side) for side in pair) if isinstance(pair, tuple) else pair
+            for pair in inputs
+        ]
+        if metadata and None not in metadata:
+            processing_kwargs = dict(kwargs.get("processing_kwargs") or {})
+            processing_kwargs["video"] = {
+                **processing_kwargs.get("video", {}),
+                "video_metadata": metadata,
+            }
+            kwargs["processing_kwargs"] = processing_kwargs
+        return preprocess(inputs, *args, **kwargs)
+
+    return wrapped
 
 
 QWEN3_VL_LANGUAGES = [
@@ -73,6 +141,10 @@ class Qwen3VLRerankerWrapper(CrossEncoderWrapper):
     Reference implementation: https://github.com/QwenLM/Qwen3-VL-Embedding
     """
 
+    # the official script lets qwen-vl-utils pass each clip's source fps and frame indices, which
+    # the processor turns into the `<t seconds>` labels; without them it assumes 24 fps
+    video_metadata = True
+
     def __init__(  # noqa: PLR0913, PLR0917
         self,
         model: str,
@@ -90,8 +162,13 @@ class Qwen3VLRerankerWrapper(CrossEncoderWrapper):
         # resize video frames as the official script does (qwen-vl-utils
         # per-frame budget) instead of the processor's whole-clip budget
         video_frame_budget: bool = False,
+        *,
+        module_paths: dict[str, str] | None = None,
         **kwargs: Any,
     ) -> None:
+        if module_paths:
+            model = _snapshot_with_module_paths(model, revision, module_paths)
+            revision = None
         # Default to the checkpoint's own preprocessor_config.json. Forcing a
         # pixel budget changes how images are resized and measurably shifts
         # scores away from the reference implementation, so it is opt-in only
@@ -126,6 +203,24 @@ class Qwen3VLRerankerWrapper(CrossEncoderWrapper):
             **kwargs,
         )
         self.use_instructions = use_instructions
+        self.model.preprocess = _pass_pair_video_metadata(self.model.preprocess)
+
+    def _collect_inputs(
+        self,
+        loader: DataLoader[BatchedInput],
+        prefix: str,
+    ) -> list[Any]:
+        # The official format_mm_content puts media before text (video, image, text).
+        # sentence-transformers>=6 keeps the dict's key order (5.x sorted the keys, i.e. image
+        # before text but text before video), so fix the order here.
+        # https://huggingface.co/Qwen/Qwen3-VL-Reranker-2B/blob/main/scripts/qwen3_vl_reranker.py
+        order = {"video": 0, "image": 1, "text": 2}
+        return [
+            {k: item[k] for k in sorted(item, key=lambda k: order.get(k, len(order)))}
+            if isinstance(item, dict)
+            else item
+            for item in super()._collect_inputs(loader, prefix)
+        ]
 
     @staticmethod
     def _normalize_instruction(instruction: str) -> str:
@@ -210,8 +305,14 @@ qwen3_vl_reranker_2b = ModelMeta(
 
 qwen3_vl_reranker_8b = ModelMeta(
     loader=Qwen3VLRerankerWrapper,
-    # same official script as the 2B: qwen-vl-utils' per-frame video budget
-    loader_kwargs={"video_frame_budget": True},
+    # modules.json at this revision points module 1 to "1_CausalScoreHead", but the repo ships
+    # "1_LogitScore/config.json" (renamed in the ST integration PR, path not updated), so every
+    # sentence-transformers version builds LogitScore() without its token ids and fails.
+    # https://huggingface.co/Qwen/Qwen3-VL-Reranker-8B/blob/b212dc8c91a8164aef1ea2de9c1a867611e75c04/modules.json
+    loader_kwargs={
+        "module_paths": {"1_CausalScoreHead": "1_LogitScore"},
+        "video_frame_budget": True,
+    },
     name="Qwen/Qwen3-VL-Reranker-8B",
     model_type=["cross-encoder"],
     languages=QWEN3_VL_LANGUAGES,
