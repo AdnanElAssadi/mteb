@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from torch.utils.data import DataLoader
 
     from mteb.abstasks.task_metadata import TaskMetadata
+    from mteb.models.modality_collators import VideoFrameMetadata
     from mteb.types import Array, BatchedInput
 
 Pooling = Literal["last.normal", "splade.last"]
@@ -356,6 +357,7 @@ class _UEmbedInference:
         conversations: list[list[dict[str, Any]]],
         images: list[Image.Image],
         videos: list[torch.Tensor],
+        videos_metadata: list[VideoFrameMetadata | None] | None = None,
     ) -> dict[str, torch.Tensor]:
         from transformers.video_utils import VideoMetadata
 
@@ -364,15 +366,18 @@ class _UEmbedInference:
             add_generation_prompt=True,
             tokenize=False,
         )
-        # Qwen3-VL renders frame timestamps into the prompt, so report the rate
-        # VideoCollator sampled at rather than let the processor assume 24 fps.
+        # Qwen3-VL renders frame timestamps into the prompt, so report where
+        # VideoCollator took the frames rather than let the processor assume 24 fps.
+        videos_metadata = videos_metadata or [None] * len(videos)
         video_metadata = [
-            VideoMetadata(
+            VideoMetadata(**metadata)
+            if metadata is not None
+            else VideoMetadata(
                 total_num_frames=len(video),
                 fps=self.fps,
                 frames_indices=list(range(len(video))),
             )
-            for video in videos
+            for video, metadata in zip(videos, videos_metadata, strict=True)
         ]
 
         inputs = self.processor(
@@ -444,7 +449,14 @@ class _UEmbedInference:
                 images.extend(item_images)
                 videos.extend(item_videos)
 
-            inputs = self._preprocess_inputs(conversations, images, videos)
+            videos_metadata = [
+                item.get("video_metadata")
+                for item in items
+                if item.get("video") is not None
+            ]
+            inputs = self._preprocess_inputs(
+                conversations, images, videos, videos_metadata
+            )
             outputs = self.model(**inputs)
             hidden_state = outputs.last_hidden_state
             attention_mask = cast("torch.Tensor", inputs["attention_mask"])
@@ -564,6 +576,8 @@ class UEmbedEncoder(AbsEncoder):
             item: dict[str, Any] = {}
             for key in modality_keys:
                 item[key] = batch[key][row_index]  # type: ignore[index,literal-required]
+            if "video_metadata" in batch:
+                item["video_metadata"] = batch["video_metadata"][row_index]  # type: ignore[typeddict-item]
             if instruction:
                 item["instruction"] = instruction
             items.append(item)
@@ -602,6 +616,7 @@ class UEmbedEncoder(AbsEncoder):
                 target_sampling_rate=16_000,
                 fps=self.fps,
                 max_frames=self.max_frames,
+                with_metadata=True,
             )
 
         batches: list[torch.Tensor] = []
