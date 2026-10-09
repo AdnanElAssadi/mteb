@@ -94,7 +94,7 @@ class WavlmWrapper(AbsEncoder):
                     output_hidden_states=True,
                 )
 
-                last_hidden_state = outputs.hidden_states[-1]
+                last_hidden_state = outputs.last_hidden_state
 
                 # Apply attention-masked pooling to exclude padding tokens
                 batch_size, hidden_seq_len, hidden_size = last_hidden_state.shape
