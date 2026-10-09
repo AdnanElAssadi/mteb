@@ -174,7 +174,10 @@ class ImageBindWrapper(AbsEncoder):
         has_audio = "audio" in inputs.dataset.features
 
         if has_audio:
-            inputs.collate_fn = AudioCollator(target_sampling_rate=16_000)
+            # imagebind/data.py resamples with torchaudio's default filter
+            inputs.collate_fn = AudioCollator(
+                target_sampling_rate=16_000, resampling="torchaudio_default"
+            )
 
         all_embeddings: list[torch.Tensor] = []
         for batch in tqdm(inputs, desc="Encoding"):

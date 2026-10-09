@@ -61,8 +61,11 @@ class EncodecWrapper(AbsEncoder):
         max_samples = seconds_to_samples(
             self.max_audio_length_seconds, self.sampling_rate
         )
+        # encodec.utils.convert_audio resamples with torchaudio's default filter
         inputs.collate_fn = AudioCollator(
-            target_sampling_rate=self.sampling_rate, max_samples=max_samples
+            target_sampling_rate=self.sampling_rate,
+            max_samples=max_samples,
+            resampling="torchaudio_default",
         )
 
         all_embeddings = []
