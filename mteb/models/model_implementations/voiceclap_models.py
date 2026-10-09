@@ -99,6 +99,8 @@ class VoiceCLAPSmallWrapper(AbsEncoder):
             max_samples=seconds_to_samples(
                 self.max_audio_length_seconds, self.sampling_rate
             ),
+            # the model card resamples with torchaudio's default filter
+            resampling="torchaudio_default",
         )
 
         all_features = []

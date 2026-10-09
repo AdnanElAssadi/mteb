@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mteb.models.model_meta import ModelMeta, ScoringFunction
 from mteb.models.sentence_transformer_wrapper import (
     SentenceTransformerEncoderWrapper,
 )
+
+if TYPE_CHECKING:
+    from mteb.models.modality_collators import AudioResampling
 
 AUROLA_TRAINING_DATASETS = {
     "AudioCapsA2TRetrieval",
@@ -32,6 +35,11 @@ class AuroLAOmniWrapper(SentenceTransformerEncoderWrapper):
         # 300 s at 16 kHz: chunk_length=300
         # https://huggingface.co/Jazzcharles/AuroLA-Omni-3B/blob/main/preprocessor_config.json
         max_samples: int | None = 4_800_000,
+        # the model card encodes audio file paths (`encode_document(["path/to/audio.wav"])`),
+        # which transformers resamples with FFmpeg (torchcodec); torchaudio's default
+        # filter is closer to that than kaiser_best
+        # https://huggingface.co/Jazzcharles/AuroLA-Omni-3B/blob/main/README.md
+        audio_resampling: AudioResampling = "torchaudio_default",
         **kwargs: Any,
     ) -> None:
         super().__init__(
@@ -42,6 +50,7 @@ class AuroLAOmniWrapper(SentenceTransformerEncoderWrapper):
             max_frames=max_frames,
             num_frames=num_frames,
             max_samples=max_samples,
+            audio_resampling=audio_resampling,
             **kwargs,
         )
         self.target_sampling_rate = self.model[

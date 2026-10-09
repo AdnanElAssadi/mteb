@@ -350,6 +350,9 @@ clap_large_v2 = ModelMeta(
         # 300 s at 16 kHz: chunk_length=300
         # https://huggingface.co/laion/voiceclap-large-v2/blob/main/preprocessor_config.json
         "max_samples": 4_800_000,
+        # the model card encodes file paths, which transformers resamples with FFmpeg
+        # (torchcodec); torchaudio's default filter is much closer to that
+        "audio_resampling": "torchaudio_default",
     },
     name="laion/voiceclap-large-v2",
     languages=["eng-Latn", "deu-Latn", "fra-Latn", "spa-Latn", "zho-Hans"],

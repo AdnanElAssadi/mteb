@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from torch.utils.data import DataLoader
 
     from mteb import TaskMetadata
+    from mteb.models.modality_collators import AudioResampling
     from mteb.types import Array, BatchedInput, PromptType
     from mteb.types._encoder_io import AudioInput, TextInput
 
@@ -338,6 +339,7 @@ class SemanticRouterMultiModalEmbedWrapper(AbsEncoder):
     # 30 s: the audio encoder is Whisper (audio_encoder_name), chunk_length=30
     # https://huggingface.co/openai/whisper-medium/blob/main/preprocessor_config.json
     max_audio_seconds = 30.0
+    audio_resampling: AudioResampling = "kaiser_best"
 
     def __init__(self, device: str | None = None) -> None:
         import torch
@@ -355,6 +357,7 @@ class SemanticRouterMultiModalEmbedWrapper(AbsEncoder):
         inputs.collate_fn = AudioCollator(
             target_sampling_rate=self.sampling_rate,
             max_samples=self.max_audio_samples,
+            resampling=self.audio_resampling,
         )
 
     def get_text_embeddings(
@@ -460,6 +463,9 @@ class SemanticRouterMultiModalEmbedWrapper(AbsEncoder):
 
 class SemanticRouterMultiModalEmbedSmallWrapper(SemanticRouterMultiModalEmbedWrapper):
     """Wrapper for llm-semantic-router/multi-modal-embed-small (text/image/audio)."""
+
+    # the model card resamples with torchaudio's default filter
+    audio_resampling: AudioResampling = "torchaudio_default"
 
     def __init__(
         self,
