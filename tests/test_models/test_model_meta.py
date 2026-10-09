@@ -668,3 +668,25 @@ def test_get_model_metas_iso_code_matches_language_script():
 def test_get_model_metas_invalid_language():
     with pytest.raises(ValueError, match="Invalid language code"):
         mteb.get_model_metas(languages=["english"])
+
+
+def test_video_models_require_the_video_extra():
+    """Video inputs are decoded with torchcodec, so every video model needs the `video` extra."""
+    video_metas = [
+        meta
+        for meta in mteb.get_model_metas()
+        if "video" in meta.modalities and not meta.name.startswith("mteb/baseline")
+    ]
+    assert video_metas
+    missing = [
+        meta.name
+        for meta in video_metas
+        if "video" not in meta._resolve_extras_groups()
+    ]
+    assert missing == []
+
+
+def test_text_only_api_model_does_not_require_the_video_extra():
+    meta = mteb.get_model_meta("bedrock/amazon-titan-embed-text-v1")
+    assert meta.modalities == ["text"]
+    assert "video" not in meta._resolve_extras_groups()
