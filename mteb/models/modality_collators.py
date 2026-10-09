@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import numpy as np
 
@@ -20,6 +20,67 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 log_once = LogOnce(logger)
+
+# FPS-based sampling follows qwen-vl-utils (FPS_MIN_FRAMES, FRAME_FACTOR), which
+# almost every fps-sampled model here was trained with. Qwen-VL video
+# processors need at least 2 frames (`t:1 must be larger than temporal_factor:2`).
+DEFAULT_MIN_FRAMES = 4
+DEFAULT_FRAME_FACTOR = 2
+
+
+class VideoFrameMetadata(TypedDict):
+    """Where the sampled frames of a clip come from.
+
+    The keys match ``transformers.video_utils.VideoMetadata``, so the dict can be
+    passed to a video processor as ``video_metadata`` (or as
+    ``{"array": frames, "video_metadata": ...}`` to sentence-transformers).
+
+    Attributes:
+        total_num_frames: Number of (decodable) frames in the source clip.
+        fps: Frame rate of the source clip.
+        duration: Duration of the source clip in seconds.
+        frames_indices: Source index of each sampled frame.
+    """
+
+    total_num_frames: int
+    fps: float | None
+    duration: float | None
+    frames_indices: list[int]
+
+
+def sampled_fps(metadata: VideoFrameMetadata) -> float | None:
+    """Rate of the sampled frames, as qwen-vl-utils reports it to the processor.
+
+    ``len(frames_indices) / total_num_frames * fps``; None without a source fps.
+    """
+    if not metadata["fps"] or not metadata["total_num_frames"]:
+        return None
+    return (
+        len(metadata["frames_indices"]) / metadata["total_num_frames"] * metadata["fps"]
+    )
+
+
+def fps_shortfall(
+    metadata: VideoFrameMetadata,
+    fps: float,
+    frame_factor: int = DEFAULT_FRAME_FACTOR,
+) -> float:
+    """How much slower than ``fps`` a clip was sampled, as ``fps / sampled_fps``.
+
+    1.0 when the clip got the frames FPS-based sampling asks for (up to the
+    rounding of the frame count). Above 1.0 when ``max_frames`` capped a long
+    clip or the source has fewer frames than ``fps`` asks for. Processors that
+    assume a fixed frame rate (Qwen-Omni) need their frame timing stretched by
+    this factor.
+    """
+    actual = sampled_fps(metadata)
+    if actual is None:
+        return 1.0
+    n_frames = len(metadata["frames_indices"])
+    duration = n_frames / actual
+    if n_frames + frame_factor >= duration * fps:
+        return 1.0
+    return fps / actual
 
 
 class AudioCollator:
@@ -192,9 +253,12 @@ class FramesCollator:
     - FPS-based: downsamples to ``fps`` frames per second, so the number of
       selected frames scales with video duration. Videos already below the
       target rate keep all frames. ``max_frames`` caps the total to prevent
-      OOM on very long videos.
+      OOM on very long videos. As in qwen-vl-utils, at least ``min_frames``
+      frames are taken and the count is rounded down to a multiple of
+      ``frame_factor``.
     - Fixed-sample: always selects exactly ``num_frames`` frames uniformly
-      across the video, regardless of duration.
+      across the video, regardless of duration. Clips with fewer frames
+      repeat each frame in place.
 
     When both ``fps`` and ``num_frames`` are None, no frame resampling is
     performed and all frames are returned as-is for the model's processor
@@ -207,6 +271,9 @@ class FramesCollator:
         fps: float | None = None,
         max_frames: int | None = None,
         num_frames: int | None = None,
+        min_frames: int = DEFAULT_MIN_FRAMES,
+        frame_factor: int = DEFAULT_FRAME_FACTOR,
+        with_metadata: bool = False,
     ) -> None:
         """Initialize the collator.
 
@@ -219,6 +286,12 @@ class FramesCollator:
                 FPS-based sampling.
             num_frames: If set, use fixed-sample mode: always select this many
                 frames uniformly from the video.
+            min_frames: Minimum number of frames in FPS-based sampling.
+            frame_factor: In FPS-based sampling, round the frame count down to
+                a multiple of this.
+            with_metadata: Also return a "video_metadata" column with a
+                `VideoFrameMetadata` per clip, for processors that need the
+                frame timing.
         """
         if num_frames is not None and fps is not None:
             raise ValueError(
@@ -228,18 +301,25 @@ class FramesCollator:
         self.fps = fps
         self.max_frames = max_frames
         self.num_frames = num_frames
+        self.min_frames = min_frames
+        self.frame_factor = frame_factor
+        self.with_metadata = with_metadata
 
     def __call__(self, inputs: list[dict[str, Any]]) -> BatchedInput:
         """Collate a batch of video inputs by resampling the video frames according to the specified parameters."""
         collated_inputs = []
         for row in inputs:
             # assign in place (no pop) to keep the dataset's column order
-            row["video"] = self.resample_video(
+            row["video"], metadata = self.sample_video(
                 row["video"],
                 fps=self.fps,
                 max_frames=self.max_frames,
                 num_frames=self.num_frames,
+                min_frames=self.min_frames,
+                frame_factor=self.frame_factor,
             )
+            if self.with_metadata:
+                row["video_metadata"] = metadata
             collated_inputs.append(row)
         return cast(
             "BatchedInput",
@@ -253,8 +333,34 @@ class FramesCollator:
         fps: float | None = None,
         max_frames: int | None = None,
         num_frames: int | None = None,
+        min_frames: int = DEFAULT_MIN_FRAMES,
+        frame_factor: int = DEFAULT_FRAME_FACTOR,
     ) -> torch.Tensor:
         """Resample a video input to a target number of frames.
+
+        Same as `sample_video`, without the frame metadata.
+        """
+        frames, _ = FramesCollator.sample_video(
+            video,
+            fps=fps,
+            max_frames=max_frames,
+            num_frames=num_frames,
+            min_frames=min_frames,
+            frame_factor=frame_factor,
+        )
+        return frames
+
+    @staticmethod
+    def sample_video(
+        video: VideoDecoder,
+        *,
+        fps: float | None = None,
+        max_frames: int | None = None,
+        num_frames: int | None = None,
+        min_frames: int = DEFAULT_MIN_FRAMES,
+        frame_factor: int = DEFAULT_FRAME_FACTOR,
+    ) -> tuple[torch.Tensor, VideoFrameMetadata]:
+        """Resample a video input to a target number of frames and report where they come from.
 
         When both ``fps`` and ``num_frames`` are None, all frames are returned
         for the model's processor to handle.
@@ -266,6 +372,9 @@ class FramesCollator:
             max_frames: Safety cap when using FPS-based sampling.
             num_frames: If set, select exactly this many frames uniformly
                 (fixed-sample mode).
+            min_frames: Minimum number of frames in FPS-based sampling.
+            frame_factor: In FPS-based sampling, round the frame count down to
+                a multiple of this.
         """
 
         def _indices(n_source: int) -> list[int]:
@@ -279,14 +388,19 @@ class FramesCollator:
                     raise RuntimeError(
                         "video has no duration metadata; cannot use FPS-based sampling"
                     )
-                target = max(1, int(duration * fps))
+                target = max(min_frames, int(duration * fps))
                 if max_frames is not None:
                     target = min(target, max_frames)
+                # only downsample, then round down to a multiple of frame_factor
+                target = min(target, n_source)
+                target = max(frame_factor, target - target % frame_factor)
             else:
                 raise RuntimeError("`fps` is not set; cannot use FPS-based sampling")
-            if num_frames is not None and n_source < target:
-                return (list(range(n_source)) * ((target // n_source) + 1))[:target]
-            if n_source <= target:
+            if n_source < target:
+                # repeat each frame in place (0, 0, 1, 1, ...) instead of looping
+                # back to the start, as linspace-based upstream samplers do
+                return [i * n_source // target for i in range(target)]
+            if n_source == target:
                 return list(range(n_source))
             # evenly spaced over the whole clip, as upstream samplers do
             return [int(i) for i in np.linspace(0, n_source - 1, target).round()]
@@ -299,13 +413,20 @@ class FramesCollator:
         original_n = n
         while n > 0:
             try:
-                frames: torch.Tensor = video.get_frames_at(_indices(n)).data
+                indices = _indices(n)
+                frames: torch.Tensor = video.get_frames_at(indices).data
                 if n < original_n:
                     logger.warning(
                         "Dropped %d undecodable trailing frame(s) from video",
                         original_n - n,
                     )
-                return frames
+                metadata = VideoFrameMetadata(
+                    total_num_frames=n,
+                    fps=getattr(video.metadata, "average_fps", None),
+                    duration=getattr(video.metadata, "end_stream_seconds", None),
+                    frames_indices=indices,
+                )
+                return frames, metadata
             except RuntimeError as e:
                 if "no more frames" not in str(e):
                     raise
@@ -328,6 +449,9 @@ class VideoCollator:
         max_frames: int | None = None,
         num_frames: int | None = None,
         max_samples: int | None = None,
+        min_frames: int = DEFAULT_MIN_FRAMES,
+        frame_factor: int = DEFAULT_FRAME_FACTOR,
+        with_metadata: bool = False,
     ) -> None:
         """Initialize the collator.
 
@@ -337,10 +461,18 @@ class VideoCollator:
             max_frames: Safety cap on frames per video for FPS mode.
             num_frames: If set, use fixed-sample mode instead of FPS-based.
             max_samples: Maximum number of audio samples to keep. If None, no truncation.
+            min_frames: Minimum number of frames in FPS-based sampling.
+            frame_factor: In FPS-based sampling, round the frame count down to
+                a multiple of this.
+            with_metadata: Also return a "video_metadata" column with a
+                `VideoFrameMetadata` per clip (None for rows without video).
         """
         self.fps = fps
         self.max_frames = max_frames
         self.num_frames = num_frames
+        self.min_frames = min_frames
+        self.frame_factor = frame_factor
+        self.with_metadata = with_metadata
         self.target_sampling_rate = target_sampling_rate
         self.max_samples = max_samples
 
@@ -348,15 +480,20 @@ class VideoCollator:
         """Collate a batch of inputs containing video and/or audio by resampling videos and audios according to the specified parameters."""
         collated_inputs = []
         for row in inputs:
+            metadata = None
             if "video" in row:
                 # assign in place (no pop) to keep the dataset's column order: chat
                 # templates that follow the dict order expect video before audio
-                row["video"] = FramesCollator.resample_video(
+                row["video"], metadata = FramesCollator.sample_video(
                     row["video"],
                     fps=self.fps,
                     max_frames=self.max_frames,
                     num_frames=self.num_frames,
+                    min_frames=self.min_frames,
+                    frame_factor=self.frame_factor,
                 )
+            if self.with_metadata:
+                row["video_metadata"] = metadata
             if "audio" in row:
                 audio_array = AudioCollator.resample_audio(
                     row,
