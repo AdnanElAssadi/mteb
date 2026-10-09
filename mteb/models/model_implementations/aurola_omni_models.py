@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any
 from mteb.models.model_meta import ModelMeta, ScoringFunction
 from mteb.models.sentence_transformer_wrapper import (
     SentenceTransformerEncoderWrapper,
+    _stretch_omni_video_timing,
 )
 
 if TYPE_CHECKING:
@@ -20,6 +21,10 @@ AUROLA_TRAINING_DATASETS = {
 
 class AuroLAOmniWrapper(SentenceTransformerEncoderWrapper):
     """Sets AuroLA's video and audio limits, which the generic wrapper leaves open."""
+
+    # Qwen-Omni times every clip at one fixed rate; the metadata lets
+    # _stretch_omni_video_timing correct clips capped at max_frames
+    video_metadata = True
 
     def __init__(
         self,
@@ -56,6 +61,8 @@ class AuroLAOmniWrapper(SentenceTransformerEncoderWrapper):
         self.target_sampling_rate = self.model[
             0
         ].processor.feature_extractor.sampling_rate
+        if fps is not None:
+            _stretch_omni_video_timing(self.model, fps)
         # Only videos are capped (model card); images keep the checkpoint's max_pixels
         self.model[0].processing_kwargs.update(
             {

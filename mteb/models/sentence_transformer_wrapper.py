@@ -158,6 +158,42 @@ def _attach_video_metadata(
     return samples
 
 
+def _stretch_omni_video_timing(model: SentenceTransformer, fps: float) -> None:
+    """Correct Qwen-Omni frame timing for clips sampled below ``fps``.
+
+    The Qwen-Omni processor ignores ``video_metadata`` and times every clip at
+    one fixed rate. Wrap the input module's ``preprocess`` so that
+    ``video_second_per_grid`` is stretched per clip with the metadata that
+    `_attach_video_metadata` put next to each video (needs ``video_metadata``
+    on the wrapper).
+    """
+    from mteb.models.modality_collators import stretch_second_per_grid
+
+    module = model[0]
+    preprocess = module.preprocess
+
+    def _preprocess(
+        inputs: list[Any],
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        features = preprocess(inputs, *args, **kwargs)
+        if "video_second_per_grid" not in features:
+            return features
+        metadata = [
+            item["video"].get("video_metadata")
+            for item in inputs
+            if isinstance(item, dict) and isinstance(item.get("video"), dict)
+        ]
+        if len(metadata) == len(features["video_second_per_grid"]):
+            features["video_second_per_grid"] = stretch_second_per_grid(
+                features["video_second_per_grid"], metadata, fps
+            )
+        return features
+
+    module.preprocess = _preprocess
+
+
 def _resolve_model_prompts(
     model: SentenceTransformer, model_prompts: dict[str, str] | None
 ) -> dict[str, str] | None:
