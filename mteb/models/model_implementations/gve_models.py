@@ -115,6 +115,7 @@ class GVEWrapper(AbsEncoder):
                     fps=self.fps,
                     max_frames=self.max_frames,
                     num_frames=self.num_frames,
+                    with_metadata=True,
                 )
 
             all_embeddings = []
@@ -153,10 +154,18 @@ class GVEWrapper(AbsEncoder):
 
                 image_inputs = [img.convert("RGB") for img in images if img is not None]
                 video_inputs = [vid for vid in videos if vid is not None]
+                # real source fps and frame indices: without them the Qwen2.5-VL
+                # processor assumes 24 fps (second_per_grid_ts 0.083 instead of ~2)
+                video_metadata = [
+                    metadata
+                    for metadata in batch.get("video_metadata", [None] * batch_size)
+                    if metadata is not None
+                ]
                 processed = self.processor(
                     text=prompts,
                     images=image_inputs or None,
                     videos=video_inputs or None,
+                    video_metadata=video_metadata or None,
                     videos_kwargs=self.videos_kwargs,
                     padding=True,
                     truncation=True,
