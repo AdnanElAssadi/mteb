@@ -180,4 +180,5 @@ audio_flamingo_meta = ModelMeta(
   year = {2025},
 }
 """,
+    extra_requirements_groups=["audio-flamingo-3"],
 )
