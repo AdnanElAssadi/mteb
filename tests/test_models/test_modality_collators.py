@@ -12,8 +12,8 @@ from mteb.models.modality_collators import (
     FramesCollator,
     VideoCollator,
     fps_shortfall,
-    sampled_fps,
     frame_indices,
+    sampled_fps,
     seconds_to_samples,
     single_clip_dataloader,
 )
