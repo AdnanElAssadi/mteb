@@ -10,6 +10,7 @@ from mteb._create_dataloaders import _custom_collate_fn
 from mteb.models.modality_collators import (
     AudioCollator,
     FramesCollator,
+    VideoCollator,
     seconds_to_samples,
     single_clip_dataloader,
 )
@@ -111,6 +112,41 @@ def test_audio_collator_torchaudio_default_matches_torchaudio() -> None:
     )
     expected = torchaudio.transforms.Resample(44_100, 16_000)(torch.from_numpy(audio))
     np.testing.assert_array_equal(out, expected.numpy())
+
+
+def test_video_collator_resampling_filter() -> None:
+    tone = np.sin(2 * np.pi * 8_500 * np.arange(24_000) / 24_000).astype(np.float32)
+    rows = [{"audio": {"array": tone, "sampling_rate": 24_000}}]
+    levels = {}
+    for resampling in ("kaiser_best", "torchaudio_default"):
+        out = VideoCollator(target_sampling_rate=16_000, resampling=resampling)(  # type: ignore[arg-type]
+            [dict(row) for row in rows]
+        )
+        array = out["audio"][0]["array"]
+        levels[resampling] = float(np.sqrt(np.mean(array[1000:-1000] ** 2) * 2))
+    assert levels["kaiser_best"] < 0.01
+    assert levels["torchaudio_default"] > 0.2
+
+
+def test_sentence_transformer_collator_gets_audio_resampling() -> None:
+    from mteb.models.sentence_transformer_wrapper import _setup_modality_collator
+
+    class _Dataset:
+        features = {"audio": None}
+
+    for feature in ("audio", "video"):
+        _Dataset.features = {feature: None}
+        loader = SimpleNamespace(dataset=_Dataset(), collate_fn=None)
+        _setup_modality_collator(
+            loader,  # type: ignore[arg-type]
+            fps=None,
+            max_frames=None,
+            num_frames=None,
+            target_sampling_rate=None,
+            max_samples=None,
+            resampling="torchaudio_default",
+        )
+        assert loader.collate_fn.resampling == "torchaudio_default"
 
 
 def test_audio_collator_rejects_non_positive_cap() -> None:

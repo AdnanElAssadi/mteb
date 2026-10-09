@@ -354,6 +354,7 @@ class VideoCollator:
         max_frames: int | None = None,
         num_frames: int | None = None,
         max_samples: int | None = None,
+        resampling: AudioResampling = "kaiser_best",
     ) -> None:
         """Initialize the collator.
 
@@ -363,12 +364,14 @@ class VideoCollator:
             max_frames: Safety cap on frames per video for FPS mode.
             num_frames: If set, use fixed-sample mode instead of FPS-based.
             max_samples: Maximum number of audio samples to keep. If None, no truncation.
+            resampling: Audio resampling filter, see `_RESAMPLING_KWARGS`.
         """
         self.fps = fps
         self.max_frames = max_frames
         self.num_frames = num_frames
         self.target_sampling_rate = target_sampling_rate
         self.max_samples = max_samples
+        self.resampling = resampling
 
     def __call__(self, inputs: list[dict[str, Any]]) -> BatchedInput:
         """Collate a batch of inputs containing video and/or audio by resampling videos and audios according to the specified parameters."""
@@ -387,6 +390,7 @@ class VideoCollator:
                     row,
                     target_sampling_rate=self.target_sampling_rate,
                     max_samples=self.max_samples,
+                    resampling=self.resampling,
                 )
                 row["audio"] = AudioInputItem(
                     array=audio_array, sampling_rate=self.target_sampling_rate
