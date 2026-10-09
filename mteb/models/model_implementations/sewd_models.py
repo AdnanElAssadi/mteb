@@ -103,14 +103,16 @@ class SewDWrapper(AbsEncoder):
 
             with torch.no_grad():
                 # SewD model outputs
-                outputs = self.model(
+                # base SEWDModel: last_hidden_state is the upsampled encoder output
+                # (what the CTC head reads); hidden_states[-1] is the squeezed
+                # half-rate transformer output before the upsampling projection
+                outputs = self.model.sew_d(
                     feature_inputs.input_values,
                     attention_mask=feature_inputs.attention_mask,
-                    output_hidden_states=True,
                 )
 
                 # Get embeddings from last hidden state
-                last_hidden_state = outputs.hidden_states[-1]
+                last_hidden_state = outputs.last_hidden_state
 
                 # Apply attention-masked pooling to exclude padding tokens
                 batch_size, hidden_seq_len, hidden_size = last_hidden_state.shape
