@@ -169,10 +169,15 @@ class EBindWrapper(AbsEncoder):
                 fps=self.fps,
                 max_frames=self.max_frames,
                 num_frames=self.num_frames,
+                # torchaudio.functional.resample with its default filter
+                # https://github.com/encord-team/ebind/blob/main/src/ebind/models/imagebind/data.py
+                resampling="torchaudio_default",
             )
         elif has_audio:
             inputs.collate_fn = AudioCollator(
                 target_sampling_rate=16_000,
+                # https://github.com/encord-team/ebind/blob/main/src/ebind/models/imagebind/data.py
+                resampling="torchaudio_default",
             )
 
         all_embeddings: list[torch.Tensor] = []

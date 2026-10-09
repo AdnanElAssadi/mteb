@@ -316,7 +316,12 @@ class LanguageBindAudioWrapper(_LanguageBindBase):
 
         with torch.inference_mode():
             all_embeddings = []
-            inputs.collate_fn = AudioCollator(target_sampling_rate=self.sampling_rate)
+            # torchaudio.functional.resample with its default filter
+            # https://github.com/PKU-YuanGroup/LanguageBind/blob/main/languagebind/audio/processing_audio.py
+            inputs.collate_fn = AudioCollator(
+                target_sampling_rate=self.sampling_rate,
+                resampling="torchaudio_default",
+            )
 
             for batch in tqdm(
                 inputs,
