@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
+import torch
 from torch.utils.data import DataLoader, Dataset
 
 
@@ -67,3 +68,27 @@ def test_bidirlm_keeps_odd_fps_frame_counts() -> None:
         hf_subset="default",
     )
     assert len(seen[0]) == 47
+
+
+def test_omnivinci_short_clips_use_rounded_linspace() -> None:
+    from mteb.models.model_implementations.omnivinci_models import OmniVinciWrapper
+
+    seen: list[Any] = []
+
+    def _encode_batch(batch: dict[str, Any]) -> torch.Tensor:
+
+        seen.extend(batch["video"])
+        return torch.zeros(len(batch["video"]), 2)
+
+    wrapper = object.__new__(OmniVinciWrapper)
+    wrapper.num_frames = 32
+    wrapper.max_audio_samples = None
+    wrapper._encode_batch = _encode_batch
+    # VILA samples round(linspace(0, n - 1, 32)), also for clips under 32 frames
+    wrapper.encode(
+        _loader(_StubDecoder(10, seconds=1.0)),
+        task_metadata=None,
+        hf_split="test",
+        hf_subset="default",
+    )
+    assert seen[0] == [int(i) for i in np.linspace(0, 9, 32).round()]
