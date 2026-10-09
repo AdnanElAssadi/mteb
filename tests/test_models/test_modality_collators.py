@@ -69,8 +69,9 @@ def test_resample_video_fps_spans_clip_and_respects_cap() -> None:
         # odd counts are rounded down to even
         (146, 6.09, 0.5, 64, [0, 48, 97, 145]),
         (75, 2.5, 2.0, 64, [0, 25, 49, 74]),
-        # fewer source frames than the minimum: keep an even count
-        (3, 0.1, 2.0, 64, [0, 2]),
+        # fewer source frames than the minimum: keep every real frame,
+        # rounded up to an even count
+        (3, 0.1, 2.0, 64, [0, 0, 1, 2]),
         (1, 0.04, 2.0, 64, [0, 0]),
     ],
 )
@@ -131,21 +132,11 @@ def test_audio_collator_rejects_non_positive_cap() -> None:
 @pytest.mark.parametrize(
     ("mode", "n_source", "expected"),
     [
-        # authors' samplers, 8 frames from a 25-frame and a 5-frame clip
+        # 8 frames from a 25-frame and a 5-frame clip
         ("default", 25, [0, 3, 7, 10, 14, 17, 21, 24]),
         ("default", 5, [0, 0, 1, 1, 2, 3, 3, 4]),
+        ("linspace_round", 25, [0, 3, 7, 10, 14, 17, 21, 24]),
         ("linspace_round", 5, [0, 1, 1, 2, 2, 3, 3, 4]),
-        ("linspace_floor", 25, [0, 3, 6, 10, 13, 17, 20, 24]),
-        ("linspace_floor", 5, [0, 0, 1, 1, 2, 2, 3, 4]),
-        ("linspace_floor_no_pad", 25, [0, 3, 6, 10, 13, 17, 20, 24]),
-        ("linspace_floor_no_pad", 5, [0, 1, 2, 3, 4]),
-        ("uniform", 25, [0, 3, 6, 9, 12, 15, 18, 21]),
-        ("segment_middle", 25, [1, 4, 7, 10, 14, 17, 20, 23]),
-        ("segment_middle", 5, [0, 0, 1, 2, 2, 3, 4, 4]),
-        ("segment_middle_pad_last", 25, [1, 4, 7, 10, 13, 16, 19, 22]),
-        ("segment_middle_pad_last", 5, [0, 1, 2, 3, 4, 4, 4, 4]),
-        ("pad_last", 25, [0, 3, 7, 10, 14, 17, 21, 24]),
-        ("pad_last", 5, [0, 1, 2, 3, 4, 4, 4, 4]),
     ],
 )
 def test_frame_index_modes(mode: str, n_source: int, expected: list[int]) -> None:
@@ -158,17 +149,28 @@ def test_frame_index_modes(mode: str, n_source: int, expected: list[int]) -> Non
 
 
 def test_frame_index_mode_reaches_collators() -> None:
-    def sampler(n_source: int, target: int, source_fps: float | None) -> list[int]:
-        assert source_fps == 30.0
-        return [n_source - 1] * target
-
-    rows = [{"video": _StubDecoder(300, seconds=10.0)}]
-    out = FramesCollator(num_frames=4, frame_index_mode="uniform")(rows)
-    assert out["video"] == [[0, 75, 150, 225]]
-    rows = [{"video": _StubDecoder(300, seconds=10.0)}]
+    rows = [{"video": _StubDecoder(5, seconds=1.0)}]
+    out = FramesCollator(num_frames=8, frame_index_mode="linspace_round")(rows)
+    assert out["video"] == [[0, 1, 1, 2, 2, 3, 3, 4]]
+    rows = [{"video": _StubDecoder(5, seconds=1.0)}]
     out = VideoCollator(
-        target_sampling_rate=16000, num_frames=2, frame_index_mode=sampler
+        target_sampling_rate=16000, num_frames=8, frame_index_mode="linspace_round"
     )(rows)
-    assert out["video"] == [[299, 299]]
+    assert out["video"] == [[0, 1, 1, 2, 2, 3, 3, 4]]
     with pytest.raises(ValueError, match="Unknown frame index mode"):
         frame_indices(5, 8, "nope")  # type: ignore[arg-type]
+
+
+def test_resample_video_fps_short_source_keeps_every_frame() -> None:
+    """The min-frames rule never gives fewer frames than a short source has."""
+    for n_source in range(1, 8):
+        video = _StubDecoder(n_source, seconds=0.2)
+        for frame_factor in (1, 2):
+            frames = FramesCollator.resample_video(
+                video, fps=2.0, max_frames=64, frame_factor=frame_factor
+            )
+            assert len(frames) >= min(n_source, 4)
+            assert set(frames) == set(range(n_source)) or n_source > 4
+            assert len(frames) % frame_factor == 0
+    video = _StubDecoder(3, seconds=0.1)
+    assert FramesCollator.resample_video(video, fps=2.0, frame_factor=1) == [0, 1, 2]
