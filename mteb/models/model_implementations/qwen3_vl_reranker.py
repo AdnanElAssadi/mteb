@@ -139,6 +139,23 @@ class Qwen3VLRerankerWrapper(CrossEncoderWrapper):
         )
         self.use_instructions = use_instructions
 
+    def _collect_inputs(
+        self,
+        loader: DataLoader[BatchedInput],
+        prefix: str,
+    ) -> list[Any]:
+        # The official format_mm_content puts media before text (video, image, text).
+        # sentence-transformers>=6 keeps the dict's key order (5.x sorted the keys, i.e. image
+        # before text but text before video), so fix the order here.
+        # https://huggingface.co/Qwen/Qwen3-VL-Reranker-2B/blob/main/scripts/qwen3_vl_reranker.py
+        order = {"video": 0, "image": 1, "text": 2}
+        return [
+            {k: item[k] for k in sorted(item, key=lambda k: order.get(k, len(order)))}
+            if isinstance(item, dict)
+            else item
+            for item in super()._collect_inputs(loader, prefix)
+        ]
+
     @staticmethod
     def _normalize_instruction(instruction: str) -> str:
         instruction = instruction.strip()
