@@ -46,7 +46,6 @@ class FusionEmbeddingWrapper(AbsEncoder):
     """
 
     sampling_rate = 16_000
-    max_text_tokens = 254
     # fps=1 up to 64 frames: _V_DEFAULT_FPS=1.0, _V_DEFAULT_MAX_FRAMES=64, the
     # reference's sampling for video files
     # https://huggingface.co/EximiusLabs/fusion-embedding-1-2b-preview/blob/main/inference.py
@@ -200,9 +199,10 @@ class FusionEmbeddingWrapper(AbsEncoder):
 
         for batch in tqdm(inputs, disable=not show_progress_bar):
             with torch.no_grad():
-                batch_embeddings = self.model.embed_text_batch(
-                    batch["text"], max_tokens=self.max_text_tokens
-                )
+                # no max_tokens: the remote code then uses the checkpoint's
+                # max_text_tokens=512, the cap of the reference inference.py
+                # https://huggingface.co/EximiusLabs/fusion-embedding-1-2b-preview/blob/main/config.json
+                batch_embeddings = self.model.embed_text_batch(batch["text"])
 
             embeddings.append(batch_embeddings.float().cpu().numpy())
 
@@ -276,7 +276,7 @@ fusion_embedding_1_2b_preview = ModelMeta(
     n_parameters=2_800_000_000,
     n_embedding_parameters=311_164_928,
     memory_usage_mb=10681,
-    max_tokens=254,
+    max_tokens=512,
     embed_dim=[2048, 1536, 1024, 512, 256, 128, 64],
     license="cc-by-nc-4.0",
     reference="https://huggingface.co/EximiusLabs/fusion-embedding-1-2b-preview",
@@ -339,7 +339,7 @@ fusion_embedding_2_2b_preview = ModelMeta(
     # calculate_memory_usage_mb() basis: FP32 x n_parameters; the +44.2M
     # generation-2 adapters sit inside the 2.8B rounding
     memory_usage_mb=10681,
-    max_tokens=254,
+    max_tokens=512,
     embed_dim=[2048, 1536, 1024, 512, 256, 128, 64],
     license="cc-by-nc-4.0",
     reference="https://huggingface.co/EximiusLabs/fusion-embedding-2-2b-preview",
