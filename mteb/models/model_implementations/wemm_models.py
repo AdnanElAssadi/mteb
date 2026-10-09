@@ -106,13 +106,10 @@ def _video_message(
 
     The remote module prepares frame lists with qwen-vl-utils, which times frame
     i at ``i / sample_fps`` (default 2.0) when building the frame timestamps.
-    Pass the rate at which the collator's frames are spaced in the source clip.
+    Pass the rate qwen-vl-utils itself reports for a decoded video,
+    ``nframes / total_frames * video_fps``, so normal clips keep exactly 2.0.
     """
-    indices = metadata["frames_indices"]
-    if metadata["fps"] and len(indices) > 1 and indices[-1] > indices[0]:
-        rate = (len(indices) - 1) * metadata["fps"] / (indices[-1] - indices[0])
-    else:
-        rate = sampled_fps(metadata) or 2.0
+    rate = sampled_fps(metadata) or 2.0
     content: list[dict[str, Any]] = []
     for modality, value in sample.items():
         item = {"type": modality, modality: value}

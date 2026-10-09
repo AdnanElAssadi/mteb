@@ -54,9 +54,23 @@ def test_wemm_video_message_carries_frame_rate() -> None:
                 {
                     "type": "video",
                     "video": ["f0", "f1", "f2", "f3"],
-                    "sample_fps": pytest.approx(3 * 30 / 1349),
+                    "sample_fps": pytest.approx(4 * 30 / 1350),
                 },
                 {"type": "text", "text": "q"},
             ],
         }
     ]
+
+
+def test_wemm_video_message_keeps_nominal_rate_on_normal_clips() -> None:
+    from mteb.models.model_implementations.wemm_models import _video_message
+
+    # a 10 s, 30 fps clip sampled at 2 fps: qwen-vl-utils reports exactly 2.0
+    metadata = VideoFrameMetadata(
+        total_num_frames=300,
+        fps=30.0,
+        duration=10.0,
+        frames_indices=[round(i * 299 / 19) for i in range(20)],
+    )
+    (message,) = _video_message({"video": ["f"] * 20}, metadata)
+    assert message["content"][0]["sample_fps"] == pytest.approx(2.0)
