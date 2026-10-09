@@ -35,6 +35,10 @@ class LCOEmbedding(AbsEncoder):
         # so it is in samples, not seconds
         # https://huggingface.co/Qwen/Qwen2.5-Omni-7B/blob/main/preprocessor_config.json
         max_audio_length: int | None = 4_800_000,
+        # max_pixels=1280*28*28 in the authors' MIEB eval wrapper, which uses full
+        # resolution only for document tasks (e.g. ViDoRe)
+        # https://github.com/LCO-Embedding/LCO-Embedding/blob/main/Evaluation/MTEB-MIEB/mteb/models/LCO_Embedding.py
+        max_image_pixels: int | None = 1280 * 28 * 28,
         **kwargs: Any,
     ):
         import torch
@@ -55,6 +59,7 @@ class LCOEmbedding(AbsEncoder):
         self.max_frames = max_frames
         self.num_frames = num_frames
         self.max_audio_length = max_audio_length
+        self.max_image_pixels = max_image_pixels
 
         self.processor = Qwen2_5OmniProcessor.from_pretrained(
             model_name, revision=revision
@@ -79,7 +84,11 @@ class LCOEmbedding(AbsEncoder):
     def _build_messages(
         self, batch: BatchedInput, suffix: str
     ) -> list[list[dict[str, Any]]]:
-        """Build chat messages for each item in the batch."""
+        """Build chat messages for each item in the batch.
+
+        Image plus text follows the authors' fused prompt: text first, then the
+        image, then a suffix without a modality word.
+        """
         texts = batch.get("text", [])
         images = batch.get("image", [])
         audios = batch.get("audio", [])
@@ -88,19 +97,32 @@ class LCOEmbedding(AbsEncoder):
 
         messages = []
         for i in range(batch_size):
-            content: list[dict[str, Any]] = []
-            if i < len(videos) and videos[i] is not None:
-                content.append({"type": "video", "video": "placeholder"})
-            if i < len(audios) and audios[i] is not None:
-                content.append({"type": "audio", "audio": "placeholder"})
-            if i < len(images) and images[i] is not None:
-                content.append({"type": "image", "image": "placeholder"})
-            if i < len(texts) and texts[i] is not None:
-                text = texts[i]
+            has_video = i < len(videos) and videos[i] is not None
+            has_audio = i < len(audios) and audios[i] is not None
+            has_image = i < len(images) and images[i] is not None
+            text = texts[i] if i < len(texts) else None
+            if text is not None:
                 # match author eval: cap text at 300 tokens
                 ids = self.processor.tokenizer(text).input_ids
                 if len(ids) > 300:
                     text = self.processor.tokenizer.decode(ids[:300])
+
+            content: list[dict[str, Any]] = []
+            if has_image and text is not None and not (has_video or has_audio):
+                content.append({"type": "text", "text": text})
+                content.append({"type": "image", "image": "placeholder"})
+                content.append(
+                    {"type": "text", "text": "\nSummarize the above in one word:"}
+                )
+                messages.append([{"role": "user", "content": content}])
+                continue
+            if has_video:
+                content.append({"type": "video", "video": "placeholder"})
+            if has_audio:
+                content.append({"type": "audio", "audio": "placeholder"})
+            if has_image:
+                content.append({"type": "image", "image": "placeholder"})
+            if text is not None:
                 content.append({"type": "text", "text": text})
             content.append({"type": "text", "text": suffix})
             messages.append([{"role": "user", "content": content}])
@@ -134,6 +156,18 @@ class LCOEmbedding(AbsEncoder):
                     target_sampling_rate=self.sampling_rate,
                     max_samples=self.max_audio_length,
                 )
+
+            images_kwargs: dict[str, Any] = {}
+            if (
+                self.max_image_pixels is not None
+                and task_metadata.type != "DocumentUnderstanding"
+            ):
+                images_kwargs["size"] = {
+                    "shortest_edge": self.processor.image_processor.size[
+                        "shortest_edge"
+                    ],
+                    "longest_edge": self.max_image_pixels,
+                }
 
             all_embeddings: list[torch.Tensor] = []
 
@@ -169,6 +203,7 @@ class LCOEmbedding(AbsEncoder):
                         "use_audio_in_video": False,
                     },
                     audio_kwargs={"max_length": self.max_audio_length},
+                    images_kwargs=images_kwargs,
                 ).to(self.device)
 
                 outputs = self.model(
