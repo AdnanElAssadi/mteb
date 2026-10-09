@@ -38,10 +38,14 @@ class OmniRetrieverWrapper(AbsEncoder):
     ``beats_proj``) are restored by stock ``PeftModel.from_pretrained``; the
     saved key layout is exactly what PEFT emits and re-maps on load.
 
-    Embeddings are the backbone's ``mllm_embeds``: the last-token hidden state
-    of every one of the 28 decoder layers, concatenated (28 x 3584 = 100352) and
-    projected by ``classify_linear`` to 3584 dims, then L2-normalised here (the
-    model does not normalise internally).
+    Inputs with audio or video are embedded as the backbone's ``mllm_embeds``:
+    the last-token hidden state of every one of the 28 decoder layers,
+    concatenated (28 x 3584 = 100352) and projected by ``classify_linear`` to
+    3584 dims. Text-only inputs are embedded as the backbone's ``text_embeds``,
+    the path the model was trained and evaluated with for text: the caption plus
+    ``<|im_end|>`` through the decoder alone, last-layer last-token hidden state,
+    no fusion head. Both are L2-normalised here (the model does not normalise
+    internally).
 
     Prompt layout follows the official training pipeline
     (``training/qwenvl/data/data_qwen.py``); audio and frame sampling follow the
@@ -297,10 +301,40 @@ class OmniRetrieverWrapper(AbsEncoder):
             )
         return texts, videos, audios, batch.get("video_duration") or []
 
+    def _encode_texts(self, texts: list[str]) -> torch.Tensor:
+        """Embed text-only inputs like the backbone's ``text_embeds`` (``label_ids`` branch).
+
+        The authors' evaluation (``train_qwen.py`` with ``pred_embeds``, scored from
+        ``text_embeds`` vs ``mllm_embeds`` by ``omniretriever.evaluation.score``) and the
+        training loss embed text as ``caption<|im_end|>`` run through the decoder with no
+        media prompt, taking the last-layer hidden state of the last token without the
+        ``classify_linear`` fusion head.
+        """
+        import torch
+
+        labels = [t if t.endswith("<|im_end|>") else t + "<|im_end|>" for t in texts]
+        tokenized = self.tokenizer(
+            labels, padding=True, padding_side="left", return_tensors="pt"
+        ).to(self.device)
+        attention_mask = tokenized["attention_mask"]
+        # The authors embed one text at a time; with left padding, positions must
+        # still start at 0 on the first real token.
+        position_ids = (attention_mask.cumsum(-1) - 1).clamp(min=0)
+        backbone = self.model.get_base_model()
+        outputs = backbone.model(
+            inputs_embeds=backbone.get_input_embeddings()(tokenized["input_ids"]),
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            return_dict=True,
+        )
+        return torch.nn.functional.normalize(outputs[0][:, -1, :].float(), p=2, dim=-1)
+
     def _encode_batch(self, batch: BatchedInput) -> torch.Tensor:
         import torch
 
         texts, videos, audios, durations = self._unpack(batch)
+        if not videos and not audios:
+            return self._encode_texts(texts)
         # data_qwen.py folds audio into the video stream when both are present.
         use_audio_in_video = bool(videos) and bool(audios)
 
