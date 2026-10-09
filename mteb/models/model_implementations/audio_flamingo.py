@@ -104,6 +104,10 @@ class AudioFlamingoWrapper(AbsEncoder):
                         {"audio": audio_row},
                         target_sampling_rate=self.sampling_rate,
                         max_samples=cap,
+                        # the model card passes file paths, which transformers'
+                        # load_audio resamples with FFmpeg (torchcodec); torchaudio's
+                        # default filter is much closer to that than kaiser_best
+                        resampling="torchaudio_default",
                     )
                     content.append({"type": "audio", "audio": array})
 
