@@ -9,6 +9,8 @@ from mteb._create_dataloaders import _custom_collate_fn
 from mteb.models.modality_collators import (
     AudioCollator,
     FramesCollator,
+    VideoCollator,
+    frame_indices,
     seconds_to_samples,
     single_clip_dataloader,
 )
@@ -19,7 +21,9 @@ class _StubDecoder:
 
     def __init__(self, num_frames: int, seconds: float) -> None:
         self.metadata = SimpleNamespace(
-            num_frames=num_frames, end_stream_seconds=seconds
+            num_frames=num_frames,
+            end_stream_seconds=seconds,
+            average_fps=num_frames / seconds,
         )
 
     def get_frames_at(self, indices: list[int]) -> SimpleNamespace:
@@ -122,3 +126,49 @@ def test_audio_collator_rejects_non_positive_cap() -> None:
     audio = {"array": [0.0] * 10, "sampling_rate": 16_000}
     with pytest.raises(ValueError, match="must be positive"):
         AudioCollator.resample_audio(audio, target_sampling_rate=16_000, max_samples=0)
+
+
+@pytest.mark.parametrize(
+    ("mode", "n_source", "expected"),
+    [
+        # authors' samplers, 8 frames from a 25-frame and a 5-frame clip
+        ("default", 25, [0, 3, 7, 10, 14, 17, 21, 24]),
+        ("default", 5, [0, 0, 1, 1, 2, 3, 3, 4]),
+        ("linspace_round", 5, [0, 1, 1, 2, 2, 3, 3, 4]),
+        ("linspace_floor", 25, [0, 3, 6, 10, 13, 17, 20, 24]),
+        ("linspace_floor", 5, [0, 0, 1, 1, 2, 2, 3, 4]),
+        ("linspace_floor_no_pad", 25, [0, 3, 6, 10, 13, 17, 20, 24]),
+        ("linspace_floor_no_pad", 5, [0, 1, 2, 3, 4]),
+        ("uniform", 25, [0, 3, 6, 9, 12, 15, 18, 21]),
+        ("segment_middle", 25, [1, 4, 7, 10, 14, 17, 20, 23]),
+        ("segment_middle", 5, [0, 0, 1, 2, 2, 3, 4, 4]),
+        ("segment_middle_pad_last", 25, [1, 4, 7, 10, 13, 16, 19, 22]),
+        ("segment_middle_pad_last", 5, [0, 1, 2, 3, 4, 4, 4, 4]),
+        ("pad_last", 25, [0, 3, 7, 10, 14, 17, 21, 24]),
+        ("pad_last", 5, [0, 1, 2, 3, 4, 4, 4, 4]),
+    ],
+)
+def test_frame_index_modes(mode: str, n_source: int, expected: list[int]) -> None:
+    assert frame_indices(n_source, 8, mode) == expected  # type: ignore[arg-type]
+    video = _StubDecoder(n_source, seconds=1.0)
+    assert (
+        FramesCollator.resample_video(video, num_frames=8, frame_index_mode=mode)  # type: ignore[arg-type]
+        == expected
+    )
+
+
+def test_frame_index_mode_reaches_collators() -> None:
+    def sampler(n_source: int, target: int, source_fps: float | None) -> list[int]:
+        assert source_fps == 30.0
+        return [n_source - 1] * target
+
+    rows = [{"video": _StubDecoder(300, seconds=10.0)}]
+    out = FramesCollator(num_frames=4, frame_index_mode="uniform")(rows)
+    assert out["video"] == [[0, 75, 150, 225]]
+    rows = [{"video": _StubDecoder(300, seconds=10.0)}]
+    out = VideoCollator(
+        target_sampling_rate=16000, num_frames=2, frame_index_mode=sampler
+    )(rows)
+    assert out["video"] == [[299, 299]]
+    with pytest.raises(ValueError, match="Unknown frame index mode"):
+        frame_indices(5, 8, "nope")  # type: ignore[arg-type]

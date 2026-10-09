@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 
@@ -26,6 +27,123 @@ log_once = LogOnce(logger)
 # processors need at least 2 frames (`t:1 must be larger than temporal_factor:2`).
 DEFAULT_MIN_FRAMES = 4
 DEFAULT_FRAME_FACTOR = 2
+
+FrameIndexMode = Literal[
+    "default",
+    "linspace_round",
+    "linspace_floor",
+    "linspace_floor_no_pad",
+    "uniform",
+    "segment_middle",
+    "segment_middle_pad_last",
+    "pad_last",
+]
+"""How a collator picks ``target`` frame indices from ``n_source`` frames.
+
+Most authors' samplers differ only in rounding, which matters for some models:
+
+- ``"default"``: ``round(linspace(0, n - 1, target))``; clips with fewer frames
+  repeat each frame in place, ``floor(i * n / target)``.
+- ``"linspace_round"``: ``round(linspace(0, n - 1, target))`` for every clip.
+- ``"linspace_floor"``: ``linspace(0, n - 1, target, dtype=int)`` for every clip.
+- ``"linspace_floor_no_pad"``: as ``"linspace_floor"``, but clips with at most
+  ``target`` frames keep all their frames (fewer than ``target``).
+- ``"uniform"``: ``floor(i * n / target)``, i.e. ``linspace(0, n, target,
+  endpoint=False, dtype=int)``, for every clip.
+- ``"segment_middle"``: the middle frame of each of ``target`` equal segments,
+  ``int(i * n / target + n / (2 * target))`` (mmaction's test-mode SampleFrames).
+- ``"segment_middle_pad_last"``: InternVideo2's ``get_frame_indices(sample="middle")``;
+  clips with fewer frames take every frame, then repeat the last one.
+- ``"pad_last"``: as ``"default"``, but clips with fewer frames take every frame,
+  then repeat the last one.
+
+A callable ``(n_source, target, source_fps) -> indices`` can be passed instead,
+for samplers that need the clip's frame rate or keep fewer than ``target`` frames.
+"""
+FrameSampler = Callable[[int, int, "float | None"], list[int]]
+FrameIndices = FrameIndexMode | FrameSampler
+
+
+def _linspace_round(
+    n_source: int, target: int, source_fps: float | None = None
+) -> list[int]:
+    return [int(i) for i in np.linspace(0, n_source - 1, target).round()]
+
+
+def _linspace_floor(
+    n_source: int, target: int, source_fps: float | None = None
+) -> list[int]:
+    return np.linspace(0, n_source - 1, target, dtype=int).tolist()
+
+
+def _uniform(n_source: int, target: int, source_fps: float | None = None) -> list[int]:
+    return [i * n_source // target for i in range(target)]
+
+
+def _default(n_source: int, target: int, source_fps: float | None = None) -> list[int]:
+    if n_source < target:
+        # repeat each frame in place (0, 0, 1, 1, ...) instead of looping
+        # back to the start, as linspace-based upstream samplers do
+        return _uniform(n_source, target)
+    if n_source == target:
+        return list(range(n_source))
+    # evenly spaced over the whole clip, as upstream samplers do
+    return _linspace_round(n_source, target)
+
+
+def _linspace_floor_no_pad(
+    n_source: int, target: int, source_fps: float | None = None
+) -> list[int]:
+    if n_source <= target:
+        return list(range(n_source))
+    return _linspace_floor(n_source, target)
+
+
+def _segment_middle(
+    n_source: int, target: int, source_fps: float | None = None
+) -> list[int]:
+    step = n_source / target
+    return [int(i * step + step / 2) for i in range(target)]
+
+
+def _segment_middle_pad_last(
+    n_source: int, target: int, source_fps: float | None = None
+) -> list[int]:
+    count = min(target, n_source)
+    bounds = np.linspace(0, n_source, count + 1).astype(int)
+    indices = [int(bounds[i] + bounds[i + 1] - 1) // 2 for i in range(count)]
+    return indices + [indices[-1]] * (target - count)
+
+
+def _pad_last(n_source: int, target: int, source_fps: float | None = None) -> list[int]:
+    if n_source < target:
+        return list(range(n_source)) + [n_source - 1] * (target - n_source)
+    return _default(n_source, target)
+
+
+_FRAME_INDEX_MODES: dict[str, FrameSampler] = {
+    "default": _default,
+    "linspace_round": _linspace_round,
+    "linspace_floor": _linspace_floor,
+    "linspace_floor_no_pad": _linspace_floor_no_pad,
+    "uniform": _uniform,
+    "segment_middle": _segment_middle,
+    "segment_middle_pad_last": _segment_middle_pad_last,
+    "pad_last": _pad_last,
+}
+
+
+def frame_indices(
+    n_source: int,
+    target: int,
+    mode: FrameIndices = "default",
+    source_fps: float | None = None,
+) -> list[int]:
+    """Indices of the frames to take from a clip of ``n_source`` frames, see `FrameIndexMode`."""
+    sampler = mode if callable(mode) else _FRAME_INDEX_MODES.get(mode)
+    if sampler is None:
+        raise ValueError(f"Unknown frame index mode {mode!r}")
+    return [int(i) for i in sampler(n_source, target, source_fps)]
 
 
 class AudioCollator:
@@ -218,6 +336,7 @@ class FramesCollator:
         num_frames: int | None = None,
         min_frames: int = DEFAULT_MIN_FRAMES,
         frame_factor: int = DEFAULT_FRAME_FACTOR,
+        frame_index_mode: FrameIndices = "default",
     ) -> None:
         """Initialize the collator.
 
@@ -233,6 +352,7 @@ class FramesCollator:
             min_frames: Minimum number of frames in FPS-based sampling.
             frame_factor: In FPS-based sampling, round the frame count down to
                 a multiple of this.
+            frame_index_mode: Which frames to take, see `FrameIndexMode`.
         """
         if num_frames is not None and fps is not None:
             raise ValueError(
@@ -244,6 +364,7 @@ class FramesCollator:
         self.num_frames = num_frames
         self.min_frames = min_frames
         self.frame_factor = frame_factor
+        self.frame_index_mode = frame_index_mode
 
     def __call__(self, inputs: list[dict[str, Any]]) -> BatchedInput:
         """Collate a batch of video inputs by resampling the video frames according to the specified parameters."""
@@ -257,6 +378,7 @@ class FramesCollator:
                 num_frames=self.num_frames,
                 min_frames=self.min_frames,
                 frame_factor=self.frame_factor,
+                frame_index_mode=self.frame_index_mode,
             )
             collated_inputs.append(row)
         return cast(
@@ -273,6 +395,7 @@ class FramesCollator:
         num_frames: int | None = None,
         min_frames: int = DEFAULT_MIN_FRAMES,
         frame_factor: int = DEFAULT_FRAME_FACTOR,
+        frame_index_mode: FrameIndices = "default",
     ) -> torch.Tensor:
         """Resample a video input to a target number of frames.
 
@@ -289,6 +412,7 @@ class FramesCollator:
             min_frames: Minimum number of frames in FPS-based sampling.
             frame_factor: In FPS-based sampling, round the frame count down to
                 a multiple of this.
+            frame_index_mode: Which frames to take, see `FrameIndexMode`.
         """
 
         def _indices(n_source: int) -> list[int]:
@@ -310,14 +434,12 @@ class FramesCollator:
                 target = max(frame_factor, target - target % frame_factor)
             else:
                 raise RuntimeError("`fps` is not set; cannot use FPS-based sampling")
-            if n_source < target:
-                # repeat each frame in place (0, 0, 1, 1, ...) instead of looping
-                # back to the start, as linspace-based upstream samplers do
-                return [i * n_source // target for i in range(target)]
-            if n_source == target:
-                return list(range(n_source))
-            # evenly spaced over the whole clip, as upstream samplers do
-            return [int(i) for i in np.linspace(0, n_source - 1, target).round()]
+            return frame_indices(
+                n_source,
+                target,
+                frame_index_mode,
+                getattr(video.metadata, "average_fps", None),
+            )
 
         # Retry on the actual call: decrement source count when trailing
         # frames fail to decode.
@@ -358,6 +480,7 @@ class VideoCollator:
         max_samples: int | None = None,
         min_frames: int = DEFAULT_MIN_FRAMES,
         frame_factor: int = DEFAULT_FRAME_FACTOR,
+        frame_index_mode: FrameIndices = "default",
     ) -> None:
         """Initialize the collator.
 
@@ -370,12 +493,14 @@ class VideoCollator:
             min_frames: Minimum number of frames in FPS-based sampling.
             frame_factor: In FPS-based sampling, round the frame count down to
                 a multiple of this.
+            frame_index_mode: Which frames to take, see `FrameIndexMode`.
         """
         self.fps = fps
         self.max_frames = max_frames
         self.num_frames = num_frames
         self.min_frames = min_frames
         self.frame_factor = frame_factor
+        self.frame_index_mode = frame_index_mode
         self.target_sampling_rate = target_sampling_rate
         self.max_samples = max_samples
 
@@ -392,6 +517,7 @@ class VideoCollator:
                     num_frames=self.num_frames,
                     min_frames=self.min_frames,
                     frame_factor=self.frame_factor,
+                    frame_index_mode=self.frame_index_mode,
                 )
             if "audio" in row:
                 audio_array = AudioCollator.resample_audio(
