@@ -366,6 +366,10 @@ class VideoCollator:
                 row["audio"] = AudioInputItem(
                     array=audio_array, sampling_rate=self.target_sampling_rate
                 )
+                if "video" in row:
+                    # the authors' omni prompts put a clip's video before its audio,
+                    # whatever the dataset's column order
+                    row["audio"] = row.pop("audio")
             collated_inputs.append(row)
         return cast(
             "BatchedInput",

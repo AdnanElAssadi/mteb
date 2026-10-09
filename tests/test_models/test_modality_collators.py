@@ -83,6 +83,19 @@ def test_video_collators_keep_column_order(
     assert batch["video"] == [[0, 3]]
 
 
+def test_video_collator_puts_video_before_audio() -> None:
+    """Even when the dataset lists audio first, video must come before audio."""
+    collator = VideoCollator(target_sampling_rate=16_000, num_frames=2)
+    row = {
+        "id": "a",
+        "audio": {"array": [0.0] * 10, "sampling_rate": 16_000},
+        "video": _StubDecoder(4, seconds=1.0),
+        "text": "caption",
+    }
+    batch = collator([row])
+    assert list(batch) == ["id", "video", "text", "audio"]
+
+
 def test_seconds_to_samples() -> None:
     assert seconds_to_samples(None, 16_000) is None
     assert seconds_to_samples(1.5, 16_000) == 24_000
