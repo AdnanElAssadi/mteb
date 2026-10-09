@@ -50,7 +50,13 @@ def test_bidirlm_keeps_odd_fps_frame_counts() -> None:
 
     class _Model:
         def encode(self, rows: list[dict[str, Any]], **kwargs: Any) -> np.ndarray:
-            seen.extend(row["video"] for row in rows)
+            # with video timing metadata the wrapper passes {"array", "video_metadata"}
+            seen.extend(
+                row["video"]["array"]
+                if isinstance(row["video"], dict)
+                else row["video"]
+                for row in rows
+            )
             return np.zeros((len(rows), 2))
 
     wrapper = object.__new__(BidirLMOmniEncoder)
