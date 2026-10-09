@@ -57,7 +57,10 @@ class CNN14Wrapper(AbsEncoder):
         import torch
         from speechbrain.processing.features import spectral_magnitude
 
-        inputs.collate_fn = AudioCollator(target_sampling_rate=self.sampling_rate)
+        # speechbrain resamples with torchaudio's default filter
+        inputs.collate_fn = AudioCollator(
+            target_sampling_rate=self.sampling_rate, resampling="torchaudio_default"
+        )
 
         all_embeddings = []
 

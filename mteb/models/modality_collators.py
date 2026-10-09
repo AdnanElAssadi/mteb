@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
 import numpy as np
 
@@ -107,6 +107,23 @@ def stretch_second_per_grid(
     return second_per_grid.float() * scale
 
 
+AudioResampling = Literal["kaiser_best", "torchaudio_default"]
+# torchaudio resampler settings per `resampling` choice. "kaiser_best" are
+# resampy's kaiser_best parameters (librosa's former default) and stay close to
+# librosa's soxr_hq; torchaudio's default (Hann window, width 6, rolloff 0.99)
+# lets much of the band above the new Nyquist alias back. Use
+# "torchaudio_default" for models whose authors resample with it.
+_RESAMPLING_KWARGS: dict[str, dict[str, Any]] = {
+    "kaiser_best": {
+        "lowpass_filter_width": 64,
+        "rolloff": 0.9475,
+        "resampling_method": "sinc_interp_kaiser",
+        "beta": 14.769656459379492,
+    },
+    "torchaudio_default": {},
+}
+
+
 class AudioCollator:
     """Collator for audio data that resamples audio to a target sampling rate and optionally truncates to a maximum number of samples."""
 
@@ -115,15 +132,18 @@ class AudioCollator:
         *,
         target_sampling_rate: int,
         max_samples: int | None = None,
+        resampling: AudioResampling = "kaiser_best",
     ) -> None:
         """Initialize the collator.
 
         Args:
             target_sampling_rate: The sampling rate to resample the audio to.
             max_samples: The maximum number of samples to keep for each audio. If None, no truncation is applied.
+            resampling: Resampling filter, see `_RESAMPLING_KWARGS`.
         """
         self.target_sampling_rate = target_sampling_rate
         self.max_samples = max_samples
+        self.resampling = resampling
 
     def __call__(self, inputs: list[dict[str, Any]]) -> BatchedInput:
         """Collate a batch of audio inputs by resampling them to the target sampling rate and optionally truncating to a maximum number of samples."""
@@ -131,6 +151,7 @@ class AudioCollator:
             inputs,
             target_sampling_rate=self.target_sampling_rate,
             max_samples=self.max_samples,
+            resampling=self.resampling,
         )
 
     @staticmethod
@@ -139,6 +160,7 @@ class AudioCollator:
         *,
         target_sampling_rate: int,
         max_samples: int | None = None,
+        resampling: AudioResampling = "kaiser_best",
     ) -> BatchedInput:
         """Resample a batch of audio inputs to a target sampling rate and optionally truncate to a maximum number of samples.
 
@@ -146,6 +168,7 @@ class AudioCollator:
             inputs: A list of dictionaries containing audio data under the "audio" key, where each audio is a dictionary with "array" and "sampling_rate" keys.
             target_sampling_rate: The sampling rate to resample the audio to.
             max_samples: The maximum number of samples to keep for each audio. If None, no truncation is applied.
+            resampling: Resampling filter, see `_RESAMPLING_KWARGS`.
         """
         collated_inputs = []
         for row in inputs:
@@ -153,6 +176,7 @@ class AudioCollator:
                 row,
                 target_sampling_rate=target_sampling_rate,
                 max_samples=max_samples,
+                resampling=resampling,
             )
             row["audio"] = AudioInputItem(
                 array=audio_array, sampling_rate=target_sampling_rate
@@ -169,6 +193,7 @@ class AudioCollator:
         *,
         target_sampling_rate: int,
         max_samples: int | None = None,
+        resampling: AudioResampling = "kaiser_best",
     ) -> np.typing.NDArray[np.floating]:
         """Resample an audio input to a target sampling rate and optionally truncate to a maximum number of samples.
 
@@ -176,6 +201,7 @@ class AudioCollator:
             audio: A list of dictionaries containing audio data under the "audio" key, where each audio is a dictionary with "array" and "sampling_rate" keys.
             target_sampling_rate: The sampling rate to resample the audio to.
             max_samples: The maximum number of samples to keep for each audio. If None, no truncation is applied.
+            resampling: Resampling filter, see `_RESAMPLING_KWARGS`.
         """
         if max_samples is not None and max_samples <= 0:
             raise ValueError(f"max_samples must be positive, got {max_samples}.")
@@ -190,6 +216,7 @@ class AudioCollator:
             resampler = torchaudio.transforms.Resample(
                 orig_freq=audio["sampling_rate"],
                 new_freq=target_sampling_rate,
+                **_RESAMPLING_KWARGS[resampling],
             )
             audio_array = resampler(
                 torch.from_numpy(np.asarray(audio["array"])).float()

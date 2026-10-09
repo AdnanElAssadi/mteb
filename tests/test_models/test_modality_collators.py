@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 from torch.utils.data import DataLoader
 
@@ -203,6 +204,42 @@ def test_single_clip_dataloader() -> None:
     batches = list(single)
     assert [len(b["audio"]) for b in batches] == [1] * 5
     assert [b["audio"][0]["array"] for b in batches] == [[float(i)] for i in range(5)]
+
+
+def _resampled_tone_level(frequency: float, resampling: str) -> float:
+    """RMS of a unit tone after 24 kHz -> 16 kHz, relative to the input tone."""
+    t = np.arange(24_000) / 24_000
+    tone = np.sin(2 * np.pi * frequency * t).astype(np.float32)
+    out = AudioCollator.resample_audio(
+        {"audio": {"array": tone, "sampling_rate": 24_000}},
+        target_sampling_rate=16_000,
+        resampling=resampling,  # type: ignore[arg-type]
+    )
+    return float(np.sqrt(np.mean(out[1000:-1000] ** 2) * 2))
+
+
+def test_audio_collator_resampling_filter() -> None:
+    # default: a sharp low-pass like librosa/soxr. A tone above the new Nyquist
+    # (8 kHz) is removed instead of aliasing back, one below it is kept.
+    assert _resampled_tone_level(8_500, "kaiser_best") < 0.01
+    assert _resampled_tone_level(7_000, "kaiser_best") > 0.99
+    # torchaudio's default filter, kept for models whose authors use it
+    assert _resampled_tone_level(8_500, "torchaudio_default") > 0.2
+    assert _resampled_tone_level(7_000, "torchaudio_default") < 0.9
+
+
+def test_audio_collator_torchaudio_default_matches_torchaudio() -> None:
+    import torch
+    import torchaudio
+
+    audio = np.random.default_rng(0).standard_normal(4_410).astype(np.float32)
+    out = AudioCollator.resample_audio(
+        {"audio": {"array": audio, "sampling_rate": 44_100}},
+        target_sampling_rate=16_000,
+        resampling="torchaudio_default",
+    )
+    expected = torchaudio.transforms.Resample(44_100, 16_000)(torch.from_numpy(audio))
+    np.testing.assert_array_equal(out, expected.numpy())
 
 
 def test_audio_collator_rejects_non_positive_cap() -> None:
