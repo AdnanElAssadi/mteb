@@ -4,6 +4,7 @@ import contextlib
 import os
 import pathlib
 import tempfile
+from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
 from tqdm.auto import tqdm
@@ -170,6 +171,45 @@ class OmniVinciWrapper(AbsEncoder):
 
         return conversations, temp_files
 
+    def _collate(
+        self, prompts: list[list[dict]]
+    ) -> tuple[torch.Tensor, torch.Tensor, dict, dict]:
+        """Process items one at a time and pad them ourselves.
+
+        The remote processor's batched path is unsafe: its ``pad_fn`` cannot pad
+        an item by more than its own length (crash when one prompt is >2x
+        longer than another), and it keeps only the last image's
+        ``block_sizes``. The model also needs the attention mask, otherwise the
+        ``<|endoftext|>`` pad tokens are attended to. Pad on the right: the
+        model's ``_embed`` walks ``input_ids[k]`` with indices of the unpadded
+        sequence (left padding misplaces media tokens), and re-pads on the left
+        itself after inserting media embeddings, so ``[:, -1]`` stays the last
+        real token.
+        """
+        import torch
+
+        feats = [self.processor([p]) for p in prompts]
+        max_len = max(f.input_ids.shape[1] for f in feats)
+        input_ids = torch.full(
+            (len(feats), max_len), self.processor.pad_token_id, dtype=torch.long
+        )
+        attention_mask = torch.zeros((len(feats), max_len), dtype=torch.bool)
+        media: dict[str, list] = defaultdict(list)
+        media_config: dict[str, dict] = defaultdict(dict)
+        for i, f in enumerate(feats):
+            n = f.input_ids.shape[1]
+            input_ids[i, :n] = f.input_ids[0]
+            attention_mask[i, :n] = True
+            for name, items in f.media.items():
+                media[name] += items
+            for name, cfg in f.media_config.items():
+                for key, value in cfg.items():
+                    if isinstance(value, list):
+                        media_config[name].setdefault(key, []).extend(value)
+                    else:
+                        media_config[name][key] = value
+        return input_ids, attention_mask, media, media_config
+
     def _encode_batch(self, batch: BatchedInput) -> torch.Tensor:
         """Encode a batch of multimodal samples and return L2-normalised embeddings."""
         import torch
@@ -182,12 +222,13 @@ class OmniVinciWrapper(AbsEncoder):
                 )
                 for conv in conversations
             ]
-            inputs = self.processor(text_prompts)
+            input_ids, attention_mask, media, media_config = self._collate(text_prompts)
 
             outputs = self.model(
-                input_ids=inputs.input_ids.to(self.device),
-                media=getattr(inputs, "media", None),
-                media_config=getattr(inputs, "media_config", None),
+                input_ids=input_ids.to(self.device),
+                attention_mask=attention_mask.to(self.device),
+                media=media,
+                media_config=media_config,
                 output_hidden_states=True,
                 return_dict=True,
             )
