@@ -69,9 +69,9 @@ def test_resample_video_fps_spans_clip_and_respects_cap() -> None:
         # odd counts are rounded down to even
         (146, 6.09, 0.5, 64, [0, 48, 97, 145]),
         (75, 2.5, 2.0, 64, [0, 25, 49, 74]),
-        # fewer source frames than the minimum: keep every real frame,
-        # rounded up to an even count
-        (3, 0.1, 2.0, 64, [0, 0, 1, 2]),
+        # fewer source frames than the minimum: rounded down to an even count,
+        # like qwen-vl-utils
+        (3, 0.1, 2.0, 64, [0, 2]),
         (1, 0.04, 2.0, 64, [0, 0]),
     ],
 )
@@ -161,16 +161,20 @@ def test_frame_index_mode_reaches_collators() -> None:
         frame_indices(5, 8, "nope")  # type: ignore[arg-type]
 
 
-def test_resample_video_fps_short_source_keeps_every_frame() -> None:
-    """The min-frames rule never gives fewer frames than a short source has."""
+def test_resample_video_fps_short_source_frame_counts() -> None:
+    """Short sources: frame_factor=1 keeps every frame, frame_factor=2 rounds down
+    to an even count like qwen-vl-utils (but never below 2 frames)."""
     for n_source in range(1, 8):
         video = _StubDecoder(n_source, seconds=0.2)
-        for frame_factor in (1, 2):
-            frames = FramesCollator.resample_video(
-                video, fps=2.0, max_frames=64, frame_factor=frame_factor
-            )
-            assert len(frames) >= min(n_source, 4)
-            assert set(frames) == set(range(n_source)) or n_source > 4
-            assert len(frames) % frame_factor == 0
+        frames = FramesCollator.resample_video(
+            video, fps=2.0, max_frames=64, frame_factor=1
+        )
+        assert len(frames) >= min(n_source, 4)
+        assert set(frames) == set(range(n_source)) or n_source > 4
+        frames = FramesCollator.resample_video(
+            video, fps=2.0, max_frames=64, frame_factor=2
+        )
+        assert len(frames) == max(2, min(n_source, 4) // 2 * 2)
     video = _StubDecoder(3, seconds=0.1)
     assert FramesCollator.resample_video(video, fps=2.0, frame_factor=1) == [0, 1, 2]
+    assert FramesCollator.resample_video(video, fps=2.0, frame_factor=2) == [0, 2]
