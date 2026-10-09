@@ -56,7 +56,7 @@ class AuroLAOmniWrapper(SentenceTransformerEncoderWrapper):
         self.target_sampling_rate = self.model[
             0
         ].processor.feature_extractor.sampling_rate
-        # processor_kwargs max_pixels only reaches images; videos need it per call
+        # Only videos are capped (model card); images keep the checkpoint's max_pixels
         self.model[0].processing_kwargs.update(
             {
                 "video": {
@@ -86,9 +86,6 @@ aurola_omni_7b = ModelMeta(
         "trust_remote_code": True,
         "model_kwargs": {
             "torch_dtype": "bfloat16",
-        },
-        "processor_kwargs": {
-            "max_pixels": 64 * 28 * 28,
         },
     },
     name="Jazzcharles/AuroLA-Omni-7B",
@@ -123,9 +120,6 @@ aurola_omni_3b = ModelMeta(
         "trust_remote_code": True,
         "model_kwargs": {
             "torch_dtype": "bfloat16",
-        },
-        "processor_kwargs": {
-            "max_pixels": 64 * 28 * 28,
         },
     },
     name="Jazzcharles/AuroLA-Omni-3B",
