@@ -20,7 +20,15 @@ class _FakeSentenceTransformer(list):
         processor = SimpleNamespace(
             feature_extractor=SimpleNamespace(sampling_rate=16000)
         )
-        super().__init__([SimpleNamespace(processor=processor, processing_kwargs={})])
+        super().__init__(
+            [
+                SimpleNamespace(
+                    processor=processor,
+                    processing_kwargs={},
+                    preprocess=lambda *args, **kwargs: {},
+                )
+            ]
+        )
         self.load_kwargs = kwargs
         self.prompts: dict[str, str] = {}
 

@@ -41,6 +41,7 @@ def test_audio_matches_official_loader(monkeypatch, seconds) -> None:
 
 
 def test_mixed_inputs_weight_each_modality_equally() -> None:
+    pytest.importorskip("imagebind")
     text = torch.tensor([[3.0, 4.0, 0.0]])
     audio = torch.tensor([[0.0, 0.0, 1.0]])
     wrapper = _wrapper()
