@@ -1,4 +1,5 @@
-"""VGGish must match the official TF embedding: no final ReLU, log offset 0.01.
+"""VGGish must match the official TF embedding: no final ReLU, log offset 0.01,
+log-mel examples as vggish_input.waveform_to_examples.
 
 Uses randomly initialised weights, so nothing is downloaded.
 """
@@ -75,3 +76,49 @@ def test_official_embedding_and_log_offset(model) -> None:
         per_patch = model.model(seen[0])
     assert (per_patch < 0).any()
     np.testing.assert_allclose(embedding[0], per_patch.mean(0).numpy(), rtol=1e-5)
+
+
+# official vggish_input.waveform_to_examples on a 0.6 s chirp zero-padded to 15,600
+# samples (unpadded it returns no example): example 0, frames [0, 1, 30, 59, 95],
+# every 9th mel band
+OFFICIAL_LOG_MEL = np.array(
+    [
+        [0.8725, -0.9766, -4.176, -4.5159, -4.5813, -4.5964, -4.6016, -4.6043],
+        [-0.8119, 0.7173, -4.0239, -4.511, -4.5696, -4.5914, -4.5996, -4.6038],
+        [-4.5988, -4.5785, -4.5183, -3.7359, -1.1295, -4.4972, -4.5892, -4.6006],
+        [-1.4175, -1.0635, -0.7178, -0.2862, 0.4042, 2.2419, 1.123, 0.6764],
+        [-4.6052, -4.6052, -4.6052, -4.6052, -4.6052, -4.6052, -4.6052, -4.6052],
+    ],
+    dtype=np.float32,
+)
+
+
+def _examples_seen(model, clip: np.ndarray) -> torch.Tensor:
+    seen = []
+    model.model.features.register_forward_pre_hook(
+        lambda _, args: seen.append(args[0].clone())
+    )
+    loader = DataLoader(
+        _AudioDataset([clip]), batch_size=1, collate_fn=_custom_collate_fn
+    )
+    model.get_audio_embeddings(loader, show_progress_bar=False)
+    return seen[0]
+
+
+def test_official_log_mel(model) -> None:
+    t = np.arange(9_600) / SAMPLING_RATE
+    clip = (0.5 * np.sin(2 * np.pi * (200 * t + 3000 * t**2))).astype(np.float32)
+    examples = _examples_seen(model, clip)
+    assert examples.shape == (1, 1, 96, 64)
+    np.testing.assert_allclose(
+        examples[0, 0].numpy()[[0, 1, 30, 59, 95]][:, ::9],
+        OFFICIAL_LOG_MEL,
+        atol=1e-3,
+    )
+
+
+# official example counts (non-centred 25 ms frames, 0.96 s examples, no tail)
+@pytest.mark.parametrize(("n_samples", "n_examples"), [(30_720, 1), (30_960, 2)])
+def test_official_example_count(model, n_samples, n_examples) -> None:
+    clip = np.full(n_samples, 0.1, dtype=np.float32)
+    assert _examples_seen(model, clip).shape[0] == n_examples
