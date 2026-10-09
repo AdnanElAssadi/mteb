@@ -19,6 +19,21 @@ if TYPE_CHECKING:
 class WeMMEncoderWrapper(SentenceTransformerEncoderWrapper):
     """Custom SentenceTransformer encoder wrapper for WeChat WeMM Embedding models."""
 
+    def __init__(self, model: str, revision: str | None = None, **kwargs: Any) -> None:
+        from huggingface_hub import hf_hub_download
+        from tokenizers import Tokenizer
+
+        super().__init__(model, revision=revision, **kwargs)
+        # transformers>=5.18 loads this checkpoint with Qwen3_5Tokenizer, which rebuilds the
+        # normalizer as plain NFC and drops the checkpoint's `\n$` -> "" rule. That rule removes
+        # the newline after the role before a leading image/video and after the final
+        # <|im_end|>, so <embedding> follows <|im_end|> directly. Restore it from tokenizer.json.
+        tokenizer = self.model[0].processor.tokenizer
+        tokenizer_file = hf_hub_download(model, "tokenizer.json", revision=revision)
+        tokenizer.backend_tokenizer.normalizer = Tokenizer.from_file(
+            tokenizer_file
+        ).normalizer
+
     def encode(
         self,
         inputs: DataLoader[BatchedInput],
