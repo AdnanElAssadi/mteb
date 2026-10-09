@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import unicodedata
 from typing import TYPE_CHECKING, Any
 
@@ -12,6 +13,8 @@ from mteb.models.model_meta import ModelMeta
 from mteb.models.sentence_transformer_wrapper import CrossEncoderWrapper
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
     from torch.utils.data import DataLoader
 
     from mteb.abstasks.task_metadata import TaskMetadata
@@ -46,6 +49,46 @@ def _snapshot_with_module_paths(
             (local / entry.name).symlink_to(entry)
     (local / "modules.json").write_text(json.dumps(modules, indent=2))
     return str(local)
+
+
+def _pass_pair_video_metadata(
+    preprocess: Callable[..., dict[str, Any]],
+) -> Callable[..., dict[str, Any]]:
+    """Wrap `CrossEncoder.preprocess` so videos in query/document pairs keep their frame timing.
+
+    sentence-transformers (6.1) unwraps `{"array": frames, "video_metadata": ...}` only for single
+    inputs, not inside pairs (the dict reaches `make_batched_videos` and fails). Unwrap the frames
+    here and pass the metadata through the per-call `processing_kwargs` instead. The processor
+    collects the videos of each pair in query, document order, and so does this list.
+    """
+
+    @functools.wraps(preprocess)
+    def wrapped(inputs: Sequence[object], *args: Any, **kwargs: Any) -> dict[str, Any]:
+        metadata: list[Any] = []
+
+        def unwrap(side: object) -> object:
+            video = side.get("video") if isinstance(side, dict) else None
+            if not isinstance(video, dict):
+                if video is not None:
+                    metadata.append(None)
+                return side
+            metadata.append(video["video_metadata"])
+            return {k: video["array"] if k == "video" else v for k, v in side.items()}
+
+        inputs = [
+            tuple(unwrap(side) for side in pair) if isinstance(pair, tuple) else pair
+            for pair in inputs
+        ]
+        if metadata and None not in metadata:
+            processing_kwargs = dict(kwargs.get("processing_kwargs") or {})
+            processing_kwargs["video"] = {
+                **processing_kwargs.get("video", {}),
+                "video_metadata": metadata,
+            }
+            kwargs["processing_kwargs"] = processing_kwargs
+        return preprocess(inputs, *args, **kwargs)
+
+    return wrapped
 
 
 QWEN3_VL_LANGUAGES = [
@@ -97,6 +140,10 @@ class Qwen3VLRerankerWrapper(CrossEncoderWrapper):
 
     Reference implementation: https://github.com/QwenLM/Qwen3-VL-Embedding
     """
+
+    # the official script lets qwen-vl-utils pass each clip's source fps and frame indices, which
+    # the processor turns into the `<t seconds>` labels; without them it assumes 24 fps
+    video_metadata = True
 
     def __init__(  # noqa: PLR0913, PLR0917
         self,
@@ -156,6 +203,7 @@ class Qwen3VLRerankerWrapper(CrossEncoderWrapper):
             **kwargs,
         )
         self.use_instructions = use_instructions
+        self.model.preprocess = _pass_pair_video_metadata(self.model.preprocess)
 
     def _collect_inputs(
         self,

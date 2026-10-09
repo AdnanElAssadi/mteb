@@ -582,6 +582,9 @@ class CrossEncoderWrapper:
         **kwargs: Additional arguments to pass to the CrossEncoder model.
     """
 
+    # pass the sampled frames' source indices and fps on with each video
+    video_metadata: bool = False
+
     def __init__(  # noqa: PLR0913
         self,
         model: CrossEncoder | str,
@@ -636,6 +639,7 @@ class CrossEncoderWrapper:
             num_frames=self.num_frames,
             target_sampling_rate=self.target_sampling_rate,
             max_samples=self.max_samples,
+            video_metadata=self.video_metadata,
         )
         if not is_multimodal:
             return [prefix + text for batch in loader for text in batch["text"]]
