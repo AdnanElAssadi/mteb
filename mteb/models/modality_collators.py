@@ -371,10 +371,10 @@ class FramesCollator:
                 frames uniformly from the video.
             min_frames: Minimum number of frames in FPS-based sampling.
             frame_factor: In FPS-based sampling, round the frame count down to
+                a multiple of this.
             with_metadata: Also return a "video_metadata" column with a
                 `VideoFrameMetadata` per clip, for processors that need the
                 frame timing.
-                a multiple of this (up for sources shorter than min_frames).
             frame_index_mode: Which frames to take, see `FrameIndexMode`.
         """
         if num_frames is not None and fps is not None:
@@ -463,7 +463,7 @@ class FramesCollator:
                 (fixed-sample mode).
             min_frames: Minimum number of frames in FPS-based sampling.
             frame_factor: In FPS-based sampling, round the frame count down to
-                a multiple of this (up for sources shorter than min_frames).
+                a multiple of this.
             frame_index_mode: Which frames to take, see `FrameIndexMode`.
         """
 
@@ -481,14 +481,11 @@ class FramesCollator:
                 target = max(min_frames, int(duration * fps))
                 if max_frames is not None:
                     target = min(target, max_frames)
-                # only downsample, then round to a multiple of frame_factor: down,
-                # except for a source with fewer than min_frames frames, which is
-                # rounded up so it never loses one of its few real frames
+                # only downsample, then round down to a multiple of frame_factor, as
+                # qwen-vl-utils does (a 3-frame clip gives 2 frames); wrappers whose
+                # processor needs no even count set frame_factor=1 and keep them all
                 target = min(target, n_source)
-                if target == n_source < min_frames:
-                    target = -(-target // frame_factor) * frame_factor
-                else:
-                    target = max(frame_factor, target - target % frame_factor)
+                target = max(frame_factor, target - target % frame_factor)
             else:
                 raise RuntimeError("`fps` is not set; cannot use FPS-based sampling")
             return frame_indices(n_source, target, frame_index_mode)
@@ -553,10 +550,10 @@ class VideoCollator:
             max_samples: Maximum number of audio samples to keep. If None, no truncation.
             min_frames: Minimum number of frames in FPS-based sampling.
             frame_factor: In FPS-based sampling, round the frame count down to
+                a multiple of this.
             with_metadata: Also return a "video_metadata" column with a
                 `VideoFrameMetadata` per clip (None for rows without video).
             resampling: Audio resampling filter, see `_RESAMPLING_KWARGS`.
-                a multiple of this (up for sources shorter than min_frames).
             frame_index_mode: Which frames to take, see `FrameIndexMode`.
         """
         self.fps = fps
