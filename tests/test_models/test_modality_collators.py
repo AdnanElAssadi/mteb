@@ -324,6 +324,24 @@ def test_sentence_transformer_dicts_carry_video_metadata() -> None:
         ("default", 5, [0, 0, 1, 1, 2, 3, 3, 4]),
         ("linspace_round", 25, [0, 3, 7, 10, 14, 17, 21, 24]),
         ("linspace_round", 5, [0, 1, 1, 2, 2, 3, 3, 4]),
+        # Cosmos-Embed1 card / LanguageBind: np.linspace(0, n - 1, 8, dtype=int)
+        ("linspace_floor", 25, [0, 3, 6, 10, 13, 17, 20, 24]),
+        ("linspace_floor", 5, [0, 0, 1, 1, 2, 2, 3, 4]),
+        # Jina v5 omni: clips with at most 8 (there: 32) frames keep all of them
+        ("linspace_floor_no_pad", 25, [0, 3, 6, 10, 13, 17, 20, 24]),
+        ("linspace_floor_no_pad", 5, [0, 1, 2, 3, 4]),
+        # VideoPrism: np.linspace(0, n, 8, endpoint=False, dtype=np.int32)
+        ("uniform", 25, [0, 3, 6, 9, 12, 15, 18, 21]),
+        ("uniform", 5, [0, 0, 1, 1, 2, 3, 3, 4]),
+        # X-CLIP: mmaction SampleFrames(test_mode=True), segment middles
+        ("segment_middle", 25, [1, 4, 7, 10, 14, 17, 20, 23]),
+        ("segment_middle", 5, [0, 0, 1, 2, 2, 3, 4, 4]),
+        # InternVideo2: get_frame_indices(sample="middle"), pad with the last frame
+        ("segment_middle_pad_last", 25, [1, 4, 7, 10, 13, 16, 19, 22]),
+        ("segment_middle_pad_last", 5, [0, 1, 2, 3, 4, 4, 4, 4]),
+        # V-JEPA2 / VideoMAE: short clips repeat their last frame
+        ("pad_last", 25, [0, 3, 7, 10, 14, 17, 21, 24]),
+        ("pad_last", 5, [0, 1, 2, 3, 4, 4, 4, 4]),
     ],
 )
 def test_frame_index_modes(mode: str, n_source: int, expected: list[int]) -> None:
@@ -346,6 +364,73 @@ def test_frame_index_mode_reaches_collators() -> None:
     assert out["video"] == [[0, 1, 1, 2, 2, 3, 3, 4]]
     with pytest.raises(ValueError, match="Unknown frame index mode"):
         frame_indices(5, 8, "nope")  # type: ignore[arg-type]
+
+
+def test_frame_index_mode_callable_gets_source_fps() -> None:
+    calls = []
+
+    def _sampler(n_source: int, target: int, source_fps: float | None) -> list[int]:
+        calls.append((n_source, target, source_fps))
+        return [0] * target
+
+    video = _StubDecoder(50, seconds=2.0)
+    assert FramesCollator.resample_video(
+        video, num_frames=3, frame_index_mode=_sampler
+    ) == [0, 0, 0]
+    assert calls == [(50, 3, 25.0)]
+
+
+def test_audio_downmix() -> None:
+    stereo = np.stack([np.ones(160), -np.ones(160)]).astype(np.float32)
+    row = {"audio": {"array": stereo, "sampling_rate": 16_000}}
+    mean = AudioCollator.resample_audio(row, target_sampling_rate=16_000)
+    first = AudioCollator.resample_audio(
+        row, target_sampling_rate=16_000, downmix="first"
+    )
+    np.testing.assert_array_equal(mean, np.zeros(160))
+    np.testing.assert_array_equal(first, np.ones(160))
+    out = AudioCollator(target_sampling_rate=16_000, downmix="first")([dict(row)])
+    np.testing.assert_array_equal(out["audio"][0]["array"], np.ones(160))
+    out = VideoCollator(target_sampling_rate=16_000, downmix="first")([dict(row)])
+    np.testing.assert_array_equal(out["audio"][0]["array"], np.ones(160))
+    out = AudioCollator(target_sampling_rate=16_000)([dict(row)])
+    np.testing.assert_array_equal(out["audio"][0]["array"], np.zeros(160))
+
+
+class _StubAudioDecoder:
+    """datasets' AudioDecoder: ``["array"]`` averages the channels."""
+
+    def __init__(self, samples: np.ndarray, sampling_rate: int) -> None:
+        self.samples, self.sampling_rate = samples, sampling_rate
+
+    def __getitem__(self, key: str) -> object:
+        if key == "array":
+            return self.samples.mean(axis=0)
+        return self.sampling_rate
+
+    def get_all_samples(self) -> SimpleNamespace:
+        import torch
+
+        return SimpleNamespace(data=torch.from_numpy(self.samples))
+
+
+@pytest.mark.parametrize("sampling_rate", [16_000, 32_000])
+def test_audio_downmix_first_reads_decoder_channels(sampling_rate: int) -> None:
+    stereo = np.stack([np.ones(320), -np.ones(320)]).astype(np.float32)
+    row = {"audio": _StubAudioDecoder(stereo, sampling_rate)}
+    first = AudioCollator.resample_audio(
+        row, target_sampling_rate=16_000, downmix="first"
+    )
+    mean = AudioCollator.resample_audio(row, target_sampling_rate=16_000)
+    assert first.ndim == 1
+    assert first.mean() > 0.9
+    np.testing.assert_allclose(mean, 0.0, atol=1e-6)
+    # mono files decode to one channel and stay 1-D
+    row = {"audio": _StubAudioDecoder(stereo[:1], sampling_rate)}
+    mono = AudioCollator.resample_audio(
+        row, target_sampling_rate=16_000, downmix="first"
+    )
+    assert mono.ndim == 1
 
 
 def test_resample_video_fps_short_source_frame_counts() -> None:

@@ -899,6 +899,10 @@ class JinaV5OmniWrapper(SentenceTransformerEncoderWrapper):
                 max_frames=self.max_frames,
                 num_frames=self.num_frames,
                 max_samples=self.max_samples,
+                # clips with at most 32 frames keep all of them, longer ones take
+                # np.linspace(0, n - 1, 32, dtype=int): _eval_video_frames in
+                # https://huggingface.co/jinaai/jina-embeddings-v5-omni-small/blob/main/custom_st.py#L437-L455
+                frame_index_mode="linspace_floor_no_pad",
             )
         elif has_audio:
             from mteb.models.modality_collators import AudioCollator

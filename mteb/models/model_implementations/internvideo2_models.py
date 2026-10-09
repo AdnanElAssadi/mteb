@@ -15,7 +15,14 @@ internvideo2_clip_1b_224p_f8 = ModelMeta(
     loader=SentenceTransformerEncoderWrapper,
     # 8 frames: encoded in the checkpoint name
     # https://github.com/OpenGVLab/InternVideo
-    loader_kwargs=dict(num_frames=8, trust_remote_code=True),
+    # get_frame_indices(sample="middle"): middle frame of each segment, short
+    # clips padded with the last frame
+    # https://github.com/OpenGVLab/InternVideo/blob/main/InternVideo2/multi_modality/dataset/video_utils.py#L50-L75
+    loader_kwargs=dict(
+        num_frames=8,
+        trust_remote_code=True,
+        frame_index_mode="segment_middle_pad_last",
+    ),
     name="OpenGVLab/InternVideo2-CLIP-1B-224p-f8",  # discussions/3
     revision="2e08ec173489fc13a6e4ca2d9807927b73c653a3",
     release_date="2024-03-22",

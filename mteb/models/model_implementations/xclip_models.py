@@ -117,7 +117,12 @@ class XCLIPModel(AbsEncoder):
         has_video = "video" in inputs.dataset.features
 
         if has_video:
-            inputs.collate_fn = FramesCollator(num_frames=self.num_frames)
+            # middle frame of each of num_frames segments, as mmaction's
+            # SampleFrames(clip_len=1, num_clips=8, test_mode=True) in the val pipeline
+            # https://github.com/microsoft/VideoX/blob/master/X-CLIP/datasets/pipeline.py#L1959-L1967
+            inputs.collate_fn = FramesCollator(
+                num_frames=self.num_frames, frame_index_mode="segment_middle"
+            )
 
         text_embeddings = None
         video_embeddings = None
