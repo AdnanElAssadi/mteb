@@ -27,6 +27,37 @@ log_once = LogOnce(logger)
 DEFAULT_MIN_FRAMES = 4
 DEFAULT_FRAME_FACTOR = 2
 
+FrameIndexMode = Literal["default", "linspace_round"]
+"""How a collator picks ``target`` frame indices from ``n_source`` frames.
+
+- ``"default"``: ``round(linspace(0, n - 1, target))``; clips with fewer frames
+  repeat each frame in place, ``floor(i * n / target)``.
+- ``"linspace_round"``: ``round(linspace(0, n - 1, target))`` for every clip,
+  short clips included (e.g. VILA's video loader).
+"""
+
+
+def _linspace_round(n_source: int, target: int) -> list[int]:
+    return [int(i) for i in np.linspace(0, n_source - 1, target).round()]
+
+
+def frame_indices(
+    n_source: int, target: int, mode: FrameIndexMode = "default"
+) -> list[int]:
+    """Indices of the frames to take from a clip of ``n_source`` frames, see `FrameIndexMode`."""
+    if mode == "linspace_round":
+        return _linspace_round(n_source, target)
+    if mode != "default":
+        raise ValueError(f"Unknown frame index mode {mode!r}")
+    if n_source < target:
+        # repeat each frame in place (0, 0, 1, 1, ...) instead of looping
+        # back to the start, as linspace-based upstream samplers do
+        return [i * n_source // target for i in range(target)]
+    if n_source == target:
+        return list(range(n_source))
+    # evenly spaced over the whole clip, as upstream samplers do
+    return _linspace_round(n_source, target)
+
 
 class VideoFrameMetadata(TypedDict):
     """Where the sampled frames of a clip come from.
@@ -81,6 +112,8 @@ def fps_shortfall(
     if n_frames + frame_factor >= duration * fps:
         return 1.0
     return fps / actual
+
+
 AudioResampling = Literal["kaiser_best", "torchaudio_default"]
 # torchaudio resampler settings per `resampling` choice. "kaiser_best" are
 # resampy's kaiser_best parameters (librosa's former default) and stay close to
@@ -299,6 +332,7 @@ class FramesCollator:
         min_frames: int = DEFAULT_MIN_FRAMES,
         frame_factor: int = DEFAULT_FRAME_FACTOR,
         with_metadata: bool = False,
+        frame_index_mode: FrameIndexMode = "default",
     ) -> None:
         """Initialize the collator.
 
@@ -313,10 +347,11 @@ class FramesCollator:
                 frames uniformly from the video.
             min_frames: Minimum number of frames in FPS-based sampling.
             frame_factor: In FPS-based sampling, round the frame count down to
-                a multiple of this.
             with_metadata: Also return a "video_metadata" column with a
                 `VideoFrameMetadata` per clip, for processors that need the
                 frame timing.
+                a multiple of this (up for sources shorter than min_frames).
+            frame_index_mode: Which frames to take, see `FrameIndexMode`.
         """
         if num_frames is not None and fps is not None:
             raise ValueError(
@@ -329,6 +364,7 @@ class FramesCollator:
         self.min_frames = min_frames
         self.frame_factor = frame_factor
         self.with_metadata = with_metadata
+        self.frame_index_mode = frame_index_mode
 
     def __call__(self, inputs: list[dict[str, Any]]) -> BatchedInput:
         """Collate a batch of video inputs by resampling the video frames according to the specified parameters."""
@@ -342,6 +378,7 @@ class FramesCollator:
                 num_frames=self.num_frames,
                 min_frames=self.min_frames,
                 frame_factor=self.frame_factor,
+                frame_index_mode=self.frame_index_mode,
             )
             if self.with_metadata:
                 row["video_metadata"] = metadata
@@ -360,6 +397,7 @@ class FramesCollator:
         num_frames: int | None = None,
         min_frames: int = DEFAULT_MIN_FRAMES,
         frame_factor: int = DEFAULT_FRAME_FACTOR,
+        frame_index_mode: FrameIndexMode = "default",
     ) -> torch.Tensor:
         """Resample a video input to a target number of frames.
 
@@ -372,6 +410,7 @@ class FramesCollator:
             num_frames=num_frames,
             min_frames=min_frames,
             frame_factor=frame_factor,
+            frame_index_mode=frame_index_mode,
         )
         return frames
 
@@ -384,6 +423,7 @@ class FramesCollator:
         num_frames: int | None = None,
         min_frames: int = DEFAULT_MIN_FRAMES,
         frame_factor: int = DEFAULT_FRAME_FACTOR,
+        frame_index_mode: FrameIndexMode = "default",
     ) -> tuple[torch.Tensor, VideoFrameMetadata]:
         """Resample a video input to a target number of frames and report where they come from.
 
@@ -399,7 +439,8 @@ class FramesCollator:
                 (fixed-sample mode).
             min_frames: Minimum number of frames in FPS-based sampling.
             frame_factor: In FPS-based sampling, round the frame count down to
-                a multiple of this.
+                a multiple of this (up for sources shorter than min_frames).
+            frame_index_mode: Which frames to take, see `FrameIndexMode`.
         """
 
         def _indices(n_source: int) -> list[int]:
@@ -416,19 +457,17 @@ class FramesCollator:
                 target = max(min_frames, int(duration * fps))
                 if max_frames is not None:
                     target = min(target, max_frames)
-                # only downsample, then round down to a multiple of frame_factor
+                # only downsample, then round to a multiple of frame_factor: down,
+                # except for a source with fewer than min_frames frames, which is
+                # rounded up so it never loses one of its few real frames
                 target = min(target, n_source)
-                target = max(frame_factor, target - target % frame_factor)
+                if target == n_source < min_frames:
+                    target = -(-target // frame_factor) * frame_factor
+                else:
+                    target = max(frame_factor, target - target % frame_factor)
             else:
                 raise RuntimeError("`fps` is not set; cannot use FPS-based sampling")
-            if n_source < target:
-                # repeat each frame in place (0, 0, 1, 1, ...) instead of looping
-                # back to the start, as linspace-based upstream samplers do
-                return [i * n_source // target for i in range(target)]
-            if n_source == target:
-                return list(range(n_source))
-            # evenly spaced over the whole clip, as upstream samplers do
-            return [int(i) for i in np.linspace(0, n_source - 1, target).round()]
+            return frame_indices(n_source, target, frame_index_mode)
 
         # Retry on the actual call: decrement source count when trailing
         # frames fail to decode.
@@ -478,6 +517,7 @@ class VideoCollator:
         frame_factor: int = DEFAULT_FRAME_FACTOR,
         with_metadata: bool = False,
         resampling: AudioResampling = "kaiser_best",
+        frame_index_mode: FrameIndexMode = "default",
     ) -> None:
         """Initialize the collator.
 
@@ -489,10 +529,11 @@ class VideoCollator:
             max_samples: Maximum number of audio samples to keep. If None, no truncation.
             min_frames: Minimum number of frames in FPS-based sampling.
             frame_factor: In FPS-based sampling, round the frame count down to
-                a multiple of this.
             with_metadata: Also return a "video_metadata" column with a
                 `VideoFrameMetadata` per clip (None for rows without video).
             resampling: Audio resampling filter, see `_RESAMPLING_KWARGS`.
+                a multiple of this (up for sources shorter than min_frames).
+            frame_index_mode: Which frames to take, see `FrameIndexMode`.
         """
         self.fps = fps
         self.max_frames = max_frames
@@ -500,6 +541,7 @@ class VideoCollator:
         self.min_frames = min_frames
         self.frame_factor = frame_factor
         self.with_metadata = with_metadata
+        self.frame_index_mode = frame_index_mode
         self.target_sampling_rate = target_sampling_rate
         self.max_samples = max_samples
         self.resampling = resampling
@@ -519,6 +561,7 @@ class VideoCollator:
                     num_frames=self.num_frames,
                     min_frames=self.min_frames,
                     frame_factor=self.frame_factor,
+                    frame_index_mode=self.frame_index_mode,
                 )
             if self.with_metadata:
                 row["video_metadata"] = metadata

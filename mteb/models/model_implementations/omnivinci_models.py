@@ -221,6 +221,8 @@ class OmniVinciWrapper(AbsEncoder):
                     target_sampling_rate=self.AUDIO_SAMPLING_RATE,
                     num_frames=self.num_frames,
                     max_samples=self.max_audio_samples,
+                    # VILA's video loader: round(linspace(0, n - 1, 32)), short clips too
+                    frame_index_mode="linspace_round",
                 )
                 if has_audio:
                     inputs = single_clip_dataloader(
