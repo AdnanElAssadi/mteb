@@ -10,7 +10,7 @@ from mteb._log_once import LogOnce
 from mteb.types._encoder_io import AudioInputItem
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Sequence
 
     import torch
     from torch.utils.data import DataLoader
@@ -107,6 +107,30 @@ _RESAMPLING_KWARGS: dict[str, dict[str, Any]] = {
     },
     "torchaudio_default": {},
 }
+
+
+def stretch_second_per_grid(
+    second_per_grid: torch.Tensor,
+    metadata: Sequence[VideoFrameMetadata | None],
+    fps: float,
+) -> torch.Tensor:
+    """Correct Qwen-Omni ``video_second_per_grid`` for clips sampled below ``fps``.
+
+    Qwen-Omni processors time every clip by one fixed frame rate. This keeps
+    their value for clips that got the frames ``fps`` asks for (as the
+    authors' pipelines do) and stretches it by `fps_shortfall` for clips
+    capped by ``max_frames`` or from a slower source, so the temporal
+    positions span the whole clip. Returns float32: bf16 would round e.g.
+    2.81 to 2.8125.
+    """
+    import torch
+
+    scale = torch.tensor(
+        [fps_shortfall(m, fps) if m is not None else 1.0 for m in metadata],
+        dtype=torch.float32,
+        device=second_per_grid.device,
+    )
+    return second_per_grid.float() * scale
 
 
 class AudioCollator:

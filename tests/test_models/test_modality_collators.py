@@ -347,3 +347,51 @@ def test_resample_video_fps_short_source_frame_counts() -> None:
     video = _StubDecoder(3, seconds=0.1)
     assert FramesCollator.resample_video(video, fps=2.0, frame_factor=1) == [0, 1, 2]
     assert FramesCollator.resample_video(video, fps=2.0, frame_factor=2) == [0, 2]
+
+
+def test_stretch_second_per_grid_only_for_slow_clips() -> None:
+    import torch
+
+    from mteb.models.modality_collators import stretch_second_per_grid
+
+    clips = [
+        _StubDecoder(146, seconds=6.09),  # normal clip at 2 fps
+        _StubDecoder(1350, seconds=45.0),  # capped at 64 frames
+        _StubDecoder(30, seconds=1.2),  # padded to 4 frames
+    ]
+    metadata = [
+        FramesCollator.sample_video(clip, fps=2.0, max_frames=64)[1] for clip in clips
+    ]
+    stretched = stretch_second_per_grid(
+        torch.tensor([1.0, 1.0, 1.0], dtype=torch.bfloat16), metadata, 2.0
+    )
+    assert stretched.dtype == torch.float32
+    assert stretched.tolist() == pytest.approx([1.0, 2.0 / (64 / 45.0), 1.0])
+
+
+def test_omni_preprocess_hook_stretches_per_clip() -> None:
+    import torch
+
+    from mteb.models.sentence_transformer_wrapper import _stretch_omni_video_timing
+
+    class _Module:
+        def preprocess(self, inputs, prompt=None):
+            n = sum("video" in item for item in inputs)
+            return {"video_second_per_grid": torch.ones(n)}
+
+    module = _Module()
+    _stretch_omni_video_timing([module], fps=2.0)  # type: ignore[arg-type]
+    _, capped = FramesCollator.sample_video(
+        _StubDecoder(1350, seconds=45.0), fps=2.0, max_frames=64
+    )
+    _, normal = FramesCollator.sample_video(_StubDecoder(146, seconds=6.09), fps=2.0)
+    features = module.preprocess(
+        [
+            {"text": "no video"},
+            {"video": {"array": [], "video_metadata": capped}},
+            {"video": {"array": [], "video_metadata": normal}},
+        ]
+    )
+    assert features["video_second_per_grid"].tolist() == pytest.approx(
+        [2.0 / (64 / 45.0), 1.0]
+    )

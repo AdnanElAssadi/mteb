@@ -8,11 +8,16 @@ from mteb.models.model_meta import (
 )
 from mteb.models.sentence_transformer_wrapper import (
     SentenceTransformerEncoderWrapper,
+    _stretch_omni_video_timing,
 )
 
 
 class OmniEmbedNemotronWrapper(SentenceTransformerEncoderWrapper):
     """Thin wrapper that configures video/audio processing kwargs after loading."""
+
+    # Qwen-Omni times every clip at one fixed rate; the metadata lets
+    # _stretch_omni_video_timing correct clips capped at max_frames
+    video_metadata = True
 
     def __init__(
         self,
@@ -43,6 +48,8 @@ class OmniEmbedNemotronWrapper(SentenceTransformerEncoderWrapper):
         self.target_sampling_rate = self.model[
             0
         ].processor.feature_extractor.sampling_rate
+        if fps is not None:
+            _stretch_omni_video_timing(self.model, fps)
         self.model[0].processing_kwargs.update(
             {
                 "video": {

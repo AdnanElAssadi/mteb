@@ -9,6 +9,7 @@ from mteb.models.modality_collators import (
     AudioCollator,
     VideoCollator,
     single_clip_dataloader,
+    stretch_second_per_grid,
 )
 from mteb.models.model_meta import ModelMeta, ScoringFunction
 
@@ -135,6 +136,7 @@ class QwenOmniWrapper(AbsEncoder):
                     max_frames=self.max_frames,
                     num_frames=self.num_frames,
                     max_samples=self.max_samples,
+                    with_metadata=True,
                 )
             elif has_audio:
                 inputs.collate_fn = AudioCollator(
@@ -181,6 +183,20 @@ class QwenOmniWrapper(AbsEncoder):
                     },
                     audio_kwargs={"max_length": self.max_samples},
                 ).to(self.device, dtype=torch.bfloat16)
+                if videos and self.fps and "video_second_per_grid" in model_inputs:
+                    # the processor times every clip at its fixed default rate; stretch
+                    # clips that max_frames capped (kept float32)
+                    model_inputs["video_second_per_grid"] = stretch_second_per_grid(
+                        model_inputs["video_second_per_grid"],
+                        [
+                            metadata
+                            for video, metadata in zip(
+                                videos, batch["video_metadata"], strict=True
+                            )
+                            if video is not None
+                        ],
+                        self.fps,
+                    )
 
                 outputs = self.model(
                     **model_inputs, output_hidden_states=True, return_dict=True

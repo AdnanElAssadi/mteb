@@ -6,7 +6,11 @@ from typing import TYPE_CHECKING, Any
 from tqdm.auto import tqdm
 
 from mteb.models.abs_encoder import AbsEncoder
-from mteb.models.modality_collators import AudioCollator, VideoCollator
+from mteb.models.modality_collators import (
+    AudioCollator,
+    VideoCollator,
+    stretch_second_per_grid,
+)
 from mteb.models.model_meta import ModelMeta, ScoringFunction
 from mteb.types import OutputDType
 
@@ -397,6 +401,7 @@ class ColQwen2_5OmniWrapper(ColPaliEngineWrapper):  # noqa: N801
                 max_frames=self.max_frames,
                 num_frames=self.num_frames,
                 max_samples=self.max_audio_length,
+                with_metadata=True,
             )
         elif "audio" in features:
             inputs.collate_fn = AudioCollator(
@@ -463,10 +468,26 @@ class ColQwen2_5OmniWrapper(ColPaliEngineWrapper):  # noqa: N801
     def get_video_embeddings(
         self, videos: DataLoader[BatchedInput], batch_size: int = 32, **kwargs: Any
     ) -> Array:
-        def _process(clip: torch.Tensor) -> Mapping[str, torch.Tensor]:
-            return self.processor.process_videos([clip])
+        import torch
 
-        return self._encode_batches(videos, "video", _process, "Encoding video")
+        all_embeds = []
+        with torch.no_grad():
+            for batch in tqdm(videos, desc="Encoding video"):
+                metadata = batch.get("video_metadata") or [None] * len(batch["video"])
+                for clip, clip_metadata in zip(batch["video"], metadata, strict=True):
+                    inputs = self.processor.process_videos([clip])
+                    if self.fps and "video_second_per_grid" in inputs:
+                        # the processor times every clip at its fixed default rate;
+                        # stretch clips that max_frames capped
+                        inputs["video_second_per_grid"] = stretch_second_per_grid(
+                            inputs["video_second_per_grid"], [clip_metadata], self.fps
+                        )
+                    inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                    outs = self.encode_input(inputs)
+                    all_embeds.extend(outs.cpu().to(torch.float32))
+        return torch.nn.utils.rnn.pad_sequence(
+            all_embeds, batch_first=True, padding_value=0
+        )
 
 
 colqwen2 = ModelMeta(
