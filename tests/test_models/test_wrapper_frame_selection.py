@@ -92,3 +92,29 @@ def test_omnivinci_short_clips_use_rounded_linspace() -> None:
         hf_subset="default",
     )
     assert seen[0] == [int(i) for i in np.linspace(0, 9, 32).round()]
+
+
+def test_pe_av_short_clips_keep_every_frame() -> None:
+    from mteb.models.model_implementations.pe_av_models import PEAudioVisualWrapper
+
+    seen: list[Any] = []
+    wrapper = object.__new__(PEAudioVisualWrapper)
+    wrapper.sampling_rate = 48_000
+    wrapper.fps, wrapper.max_frames, wrapper.num_frames = 2.0, 64, None
+    wrapper.max_samples = None
+
+    def _video(inputs: DataLoader, **kwargs: Any) -> np.ndarray:
+        for batch in inputs:
+            seen.extend(batch["video"])
+        return np.zeros((len(inputs.dataset), 2))
+
+    wrapper.get_video_embeddings = _video
+    # PE-AV takes any frame count: a 3-frame clip keeps 3 frames, a 23.6 s clip 47
+    wrapper.encode(
+        _loader(_StubDecoder(3, seconds=0.1), _StubDecoder(708, seconds=23.6)),
+        task_metadata=None,
+        hf_split="test",
+        hf_subset="default",
+    )
+    assert seen[0] == [0, 1, 2]
+    assert len(seen[1]) == 47
