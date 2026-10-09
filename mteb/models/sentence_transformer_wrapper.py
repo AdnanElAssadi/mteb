@@ -91,12 +91,15 @@ def _setup_modality_collator(
     num_frames: int | None,
     target_sampling_rate: int | None,
     max_samples: int | None,
+    video_metadata: bool = False,
     resampling: AudioResampling = "kaiser_best",
 ) -> bool:
     """Attach a VideoCollator/AudioCollator to ``inputs`` if needed.
 
     Returns True when any modality feature (image/audio/video) is present on
-    the dataset so the caller can take the multimodal path.
+    the dataset so the caller can take the multimodal path. With
+    ``video_metadata`` the video collator also reports where the frames come
+    from, and `_batch_to_modality_dicts` passes it on to sentence-transformers.
     """
     features = inputs.dataset.features  # type: ignore[attr-defined]
     has_video = "video" in features
@@ -110,6 +113,7 @@ def _setup_modality_collator(
             max_frames=max_frames,
             num_frames=num_frames,
             max_samples=max_samples,
+            with_metadata=video_metadata,
             resampling=resampling,
         )
     elif has_audio:
@@ -129,10 +133,29 @@ def _batch_to_modality_dicts(
 ) -> list[dict[str, Any]]:
     modality_batch = {k: v for k, v in batch.items() if k in supported_modalities}
     LogOnce(logger).info(f"Model will encode modalities {list(modality_batch.keys())}")
-    return [
+    samples = [
         dict(zip(modality_batch, sample, strict=True))
         for sample in zip(*modality_batch.values(), strict=True)
     ]
+    return _attach_video_metadata(samples, batch.get("video_metadata"))
+
+
+def _attach_video_metadata(
+    samples: list[dict[str, Any]],
+    video_metadata: list[Any] | None,
+) -> list[dict[str, Any]]:
+    """Pass the collator's frame metadata to sentence-transformers with each video.
+
+    ``{"array": frames, "video_metadata": ...}`` reaches the processor as
+    ``video_metadata``, so e.g. Qwen3-VL renders the real frame timestamps
+    instead of assuming 24 fps.
+    """
+    if video_metadata is None:
+        return samples
+    for sample, metadata in zip(samples, video_metadata, strict=True):
+        if metadata is not None and sample.get("video") is not None:
+            sample["video"] = {"array": sample["video"], "video_metadata": metadata}
+    return samples
 
 
 def _resolve_model_prompts(
@@ -375,6 +398,9 @@ class SentenceTransformerEncoderWrapper(AbsEncoder):
     uses ``encode_query``/``encode_document`` where available.
     """
 
+    # pass the sampled frames' source indices and fps to the video processor
+    video_metadata: bool = False
+
     mteb_model_meta: ModelMeta
 
     def __init__(  # noqa: PLR0913
@@ -502,6 +528,7 @@ class SentenceTransformerEncoderWrapper(AbsEncoder):
             num_frames=self.num_frames,
             target_sampling_rate=self.target_sampling_rate,
             max_samples=self.max_samples,
+            video_metadata=self.video_metadata,
             resampling=self.audio_resampling,
         )
         from sentence_transformers import __version__ as st_version

@@ -145,6 +145,9 @@ class InstructSentenceTransformerModel(AbsEncoder):
     builds per-sample modality dicts and applies the appropriate collator.
     """
 
+    # pass the sampled frames' source indices and fps to the video processor
+    video_metadata: bool = False
+
     def __init__(  # noqa: PLR0913
         self,
         model_name: str,
@@ -302,6 +305,7 @@ class InstructSentenceTransformerModel(AbsEncoder):
                 max_frames=self.max_frames,
                 num_frames=self.num_frames,
                 max_samples=self.max_samples,
+                with_metadata=self.video_metadata,
             )
         elif has_audio:
             from mteb.models.modality_collators import AudioCollator
@@ -312,14 +316,21 @@ class InstructSentenceTransformerModel(AbsEncoder):
             )
 
         if is_multimodal:
+            from mteb.models.sentence_transformer_wrapper import (
+                _attach_video_metadata,
+            )
+
             _modality_keys = {"text", "image", "audio", "video"}
             all_embeddings = []
             for batch in tqdm(inputs, desc="Building multimodal embeddings"):
                 modality_batch = {k: v for k, v in batch.items() if k in _modality_keys}
-                batched_input = [
-                    dict(zip(modality_batch, sample, strict=True))
-                    for sample in zip(*modality_batch.values(), strict=True)
-                ]
+                batched_input = _attach_video_metadata(
+                    [
+                        dict(zip(modality_batch, sample, strict=True))
+                        for sample in zip(*modality_batch.values(), strict=True)
+                    ],
+                    batch.get("video_metadata"),
+                )
 
                 embeddings = self.model.encode(
                     batched_input, prompt=instruction, **kwargs
