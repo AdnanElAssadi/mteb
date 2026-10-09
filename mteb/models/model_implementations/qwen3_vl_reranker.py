@@ -4,7 +4,9 @@ import unicodedata
 from typing import TYPE_CHECKING, Any
 
 from mteb.models.model_implementations.qwen3_vl_embedding_models import (
+    IMAGE_FACTOR,
     QWEN3_VL_EMBEDDING_CITATION,
+    load_frame_budget_video_processor,
 )
 from mteb.models.model_meta import ModelMeta
 from mteb.models.sentence_transformer_wrapper import CrossEncoderWrapper
@@ -16,6 +18,9 @@ if TYPE_CHECKING:
     from mteb.types import Array, BatchedInput, PromptType
 
 DEFAULT_INSTRUCTION = "Retrieve images or text relevant to the user's query."
+# MAX_TOTAL_PIXELS of the official script: 4 frames of 1280 tokens, times FRAME_FACTOR
+# https://huggingface.co/Qwen/Qwen3-VL-Reranker-2B/blob/main/scripts/qwen3_vl_reranker.py
+VIDEO_MAX_TOTAL_PIXELS = 4 * 2 * 1280 * IMAGE_FACTOR * IMAGE_FACTOR
 
 
 QWEN3_VL_LANGUAGES = [
@@ -68,7 +73,7 @@ class Qwen3VLRerankerWrapper(CrossEncoderWrapper):
     Reference implementation: https://github.com/QwenLM/Qwen3-VL-Embedding
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913, PLR0917
         self,
         model: str,
         revision: str | None = None,
@@ -82,6 +87,9 @@ class Qwen3VLRerankerWrapper(CrossEncoderWrapper):
         max_frames: int | None = 64,
         num_frames: int | None = None,
         use_instructions: bool = True,
+        # resize video frames as the official script does (qwen-vl-utils
+        # per-frame budget) instead of the processor's whole-clip budget
+        video_frame_budget: bool = False,
         **kwargs: Any,
     ) -> None:
         # Default to the checkpoint's own preprocessor_config.json. Forcing a
@@ -96,6 +104,16 @@ class Qwen3VLRerankerWrapper(CrossEncoderWrapper):
             processor_kwargs.setdefault("min_pixels", min_pixels)
         if max_pixels is not None:
             processor_kwargs.setdefault("max_pixels", max_pixels)
+        if video_frame_budget:
+            processor_kwargs.setdefault(
+                "video_processor",
+                load_frame_budget_video_processor(
+                    model,
+                    total_pixels=VIDEO_MAX_TOTAL_PIXELS,
+                    revision=revision,
+                    do_sample_frames=False,
+                ),
+            )
         kwargs["processor_kwargs"] = processor_kwargs
 
         super().__init__(
@@ -165,6 +183,7 @@ class Qwen3VLRerankerWrapper(CrossEncoderWrapper):
 
 qwen3_vl_reranker_2b = ModelMeta(
     loader=Qwen3VLRerankerWrapper,
+    loader_kwargs={"video_frame_budget": True},
     name="Qwen/Qwen3-VL-Reranker-2B",
     model_type=["cross-encoder"],
     languages=QWEN3_VL_LANGUAGES,
@@ -191,6 +210,8 @@ qwen3_vl_reranker_2b = ModelMeta(
 
 qwen3_vl_reranker_8b = ModelMeta(
     loader=Qwen3VLRerankerWrapper,
+    # same official script as the 2B: qwen-vl-utils' per-frame video budget
+    loader_kwargs={"video_frame_budget": True},
     name="Qwen/Qwen3-VL-Reranker-8B",
     model_type=["cross-encoder"],
     languages=QWEN3_VL_LANGUAGES,
