@@ -7,7 +7,11 @@ from tqdm.auto import tqdm
 
 from mteb.models import ModelMeta
 from mteb.models.abs_encoder import AbsEncoder
-from mteb.models.modality_collators import AudioCollator, VideoCollator
+from mteb.models.modality_collators import (
+    AudioCollator,
+    VideoCollator,
+    stretch_second_per_grid,
+)
 
 if TYPE_CHECKING:
     import torch
@@ -150,6 +154,7 @@ class LCOEmbedding(AbsEncoder):
                     max_frames=self.max_frames,
                     num_frames=self.num_frames,
                     max_samples=self.max_audio_length,
+                    with_metadata=True,
                 )
             elif has_audio:
                 inputs.collate_fn = AudioCollator(
@@ -205,6 +210,20 @@ class LCOEmbedding(AbsEncoder):
                     audio_kwargs={"max_length": self.max_audio_length},
                     images_kwargs=images_kwargs,
                 ).to(self.device)
+                if videos and self.fps and "video_second_per_grid" in model_inputs:
+                    # the processor times every clip at its fixed default rate; stretch
+                    # clips that max_frames capped (kept float32)
+                    model_inputs["video_second_per_grid"] = stretch_second_per_grid(
+                        model_inputs["video_second_per_grid"],
+                        [
+                            metadata
+                            for video, metadata in zip(
+                                videos, batch["video_metadata"], strict=True
+                            )
+                            if video is not None
+                        ],
+                        self.fps,
+                    )
 
                 outputs = self.model(
                     **model_inputs, output_hidden_states=True, return_dict=True
