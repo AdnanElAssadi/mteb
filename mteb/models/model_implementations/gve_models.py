@@ -84,11 +84,13 @@ class GVEWrapper(AbsEncoder):
 
         self.processor = AutoProcessor.from_pretrained(model_name, revision=revision)
         self.processor.tokenizer.padding_side = "left"
-        # per-frame pixel budget from the model card (size is the
-        # call-time equivalent of max_pixels); frame sampling is already
-        # done by FramesCollator
+        # per-frame pixel budget: max_pixels=200*28*28 from the model card (size
+        # is the call-time equivalent of max_pixels) and qwen-vl-utils'
+        # VIDEO_MIN_PIXELS=128*28*28 floor, which the card's video path applies;
+        # frame sampling is already done by FramesCollator
+        # https://github.com/QwenLM/Qwen2.5-VL/blob/main/qwen-vl-utils/src/qwen_vl_utils/vision_process.py
         self.videos_kwargs = {
-            "size": {"shortest_edge": 4 * 28 * 28, "longest_edge": 200 * 28 * 28},
+            "size": {"shortest_edge": 128 * 28 * 28, "longest_edge": 200 * 28 * 28},
             "do_sample_frames": False,
         }
 
