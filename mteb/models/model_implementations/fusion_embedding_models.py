@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -10,9 +11,11 @@ from mteb.models.abs_encoder import AbsEncoder
 from mteb.models.modality_collators import AudioCollator, VideoCollator
 
 if TYPE_CHECKING:
+    import torch
     from torch.utils.data import DataLoader
 
     from mteb import TaskMetadata
+    from mteb.models.modality_collators import VideoFrameMetadata
     from mteb.types import Array, BatchedInput, PromptType
     from mteb.types._encoder_io import AudioInput, TextInput
 
@@ -113,17 +116,54 @@ class FusionEmbeddingWrapper(AbsEncoder):
         embeddings = []
 
         for batch in tqdm(inputs, disable=not show_progress_bar, desc="Video Encoding"):
+            videos_metadata = batch.get("video_metadata") or [None] * len(
+                batch["video"]
+            )
             with torch.no_grad():
                 batch_embeddings = torch.stack(
                     [
-                        self.model.embed_video(video, max_frames=self.video_num_frames)
-                        for video in batch["video"]
+                        self._embed_video(video, metadata)
+                        for video, metadata in zip(
+                            batch["video"], videos_metadata, strict=True
+                        )
                     ]
                 )
 
             embeddings.append(batch_embeddings.float().cpu().numpy())
 
         return np.vstack(embeddings)
+
+    def _embed_video(
+        self,
+        video: torch.Tensor,
+        metadata: VideoFrameMetadata | None,
+    ) -> torch.Tensor:
+        """The remote `embed_video` with the real frame timing.
+
+        For frame tensors `embed_video` makes up metadata (2 fps, indices
+        0..n-1), which compresses the rendered timestamps. Its file-path branch
+        (the reference) passes the decoder's fps and frame indices, so do the
+        same steps with the metadata from VideoCollator.
+        """
+        if metadata is None:
+            return self.model.embed_video(video, max_frames=self.video_num_frames)
+        remote = sys.modules[type(self.model).__module__]
+        self.model._ensure_backbones()
+        frames = remote._v_resize_video(video)
+        text = remote._chat(
+            remote.DOC_INSTRUCTION, "<|vision_start|><|video_pad|><|vision_end|>"
+        )
+        inputs = self.model._rt["proc"](
+            text=[text],
+            videos=[frames],
+            video_metadata=[dict(metadata)],
+            do_resize=False,
+            do_sample_frames=False,
+            return_tensors="pt",
+        ).to(self.model._device)
+        hidden = self.model._rt["full"](**inputs).last_hidden_state
+        pooled = remote.last_token_pool(hidden, inputs["attention_mask"])
+        return self.model._finish(pooled, None)
 
     def get_image_embeddings(
         self,
@@ -194,6 +234,7 @@ class FusionEmbeddingWrapper(AbsEncoder):
                     target_sampling_rate=self.sampling_rate,
                     fps=self.video_fps,
                     max_frames=self.video_num_frames,
+                    with_metadata=True,
                 )
             elif modality == "audio":
                 inputs.collate_fn = AudioCollator(
