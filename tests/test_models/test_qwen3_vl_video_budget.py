@@ -4,6 +4,7 @@ import pytest
 import torch
 from transformers import Qwen3VLVideoProcessor
 
+import mteb
 from mteb.models.model_implementations.qwen3_vl_embedding_models import (
     VIDEO_MAX_TOTAL_PIXELS,
     load_frame_budget_video_processor,
@@ -46,3 +47,12 @@ def test_qwen3_vl_video_frame_budget(
     video = torch.randint(0, 256, (frames, 3, height, width), dtype=torch.uint8)
     out = video_processor(videos=[video], return_tensors="pt")
     assert out["video_grid_thw"].tolist() == [expected_grid]
+
+
+@pytest.mark.parametrize(
+    "name", ["Qwen/Qwen3-VL-Reranker-2B", "Qwen/Qwen3-VL-Reranker-8B"]
+)
+def test_qwen3_vl_rerankers_use_frame_budget(name: str) -> None:
+    # both rerankers share the official script's qwen-vl-utils per-frame budget
+    meta = mteb.get_model_meta(name)
+    assert (meta.loader_kwargs or {}).get("video_frame_budget") is True

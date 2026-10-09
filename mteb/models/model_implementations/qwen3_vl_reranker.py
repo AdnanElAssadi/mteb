@@ -210,6 +210,8 @@ qwen3_vl_reranker_2b = ModelMeta(
 
 qwen3_vl_reranker_8b = ModelMeta(
     loader=Qwen3VLRerankerWrapper,
+    # same official script as the 2B: qwen-vl-utils' per-frame video budget
+    loader_kwargs={"video_frame_budget": True},
     name="Qwen/Qwen3-VL-Reranker-8B",
     model_type=["cross-encoder"],
     languages=QWEN3_VL_LANGUAGES,
