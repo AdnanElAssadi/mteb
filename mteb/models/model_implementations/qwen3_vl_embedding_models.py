@@ -25,6 +25,10 @@ DEFAULT_INSTRUCTION = "Represent the user's input."
 
 
 class Qwen3VLEmbeddingWrapper(InstructSentenceTransformerModel):
+    # Qwen3-VL renders frame timestamps into the prompt; without the real source
+    # fps and frame indices the processor assumes 24 fps
+    video_metadata = True
+
     def __init__(
         self,
         model_name: str,
