@@ -28,8 +28,6 @@ def vggish_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
     import torch
     import torchaudio
     from torch_vggish_yamnet import vggish
-    from torch_vggish_yamnet.input_proc import WaveformToInput
-    from torch_vggish_yamnet.params import CommonParams
 
     class VGGishWrapper(AbsEncoder):
         def __init__(
@@ -54,12 +52,25 @@ def vggish_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
             self.model.embeddings = self.model.embeddings[:-1]
             self.model.eval().to(self.device)
 
-            self.converter = WaveformToInput()
             self.sampling_rate = 16000
             self.embed_dim = 128
-            # 0.96 s patches
-            # https://arxiv.org/abs/1609.09430
-            self.min_samples = int(0.96 * self.sampling_rate)  # 15,360 samples
+            # official log-mel front end (vggish_input.py / mel_features.py): the
+            # port's torchaudio MelSpectrogram centres (reflect-pads) its STFT
+            # frames and builds its mel filterbank slightly differently
+            # https://github.com/tensorflow/models/blob/master/research/audioset/vggish/mel_features.py
+            self.stft_window = torch.hann_window(
+                400, periodic=True, dtype=torch.float64
+            )
+            self.stft_hop = 160  # 10 ms
+            self.fft_length = 512
+            self.mel_matrix = torch.from_numpy(_spectrogram_to_mel_matrix())
+            self.log_offset = 0.01  # vggish_params.LOG_OFFSET
+            # non-overlapping 0.96 s examples of 96 frames
+            self.patch_frames = 96
+            # the official code returns no example for clips shorter than one
+            # example plus the STFT window minus one hop (0.975 s); zero-pad
+            # them to that length so they get exactly one example
+            self.min_samples = round(0.975 * self.sampling_rate)  # 15,600 samples
 
         def _resample_audio(
             self, audio: torch.Tensor, source_rate: int
@@ -99,6 +110,13 @@ def vggish_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
 
             return audio
 
+        def _log_mel(self, audio: torch.Tensor) -> torch.Tensor:
+            """Log-mel spectrogram [frames, mels] as mel_features.log_mel_spectrogram."""
+            frames = audio.double().unfold(-1, len(self.stft_window), self.stft_hop)
+            magnitude = torch.fft.rfft(frames * self.stft_window, n=self.fft_length)
+            mel = magnitude.abs() @ self.mel_matrix
+            return torch.log(mel + self.log_offset).float()
+
         def _prepare_input_tensor(self, audio_data: Array) -> torch.Tensor:
             """Convert audio to VGGish input format and handle tensor dimensions."""
             if isinstance(audio_data, np.ndarray):
@@ -107,32 +125,10 @@ def vggish_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
             if audio_data.ndim == 1:
                 audio_data = audio_data.unsqueeze(0)
 
-            # the port shares LOG_OFFSET (0.001, YAMNet's value) between both
-            # models; VGGish uses 0.01, so set it only for this call
-            # https://github.com/tensorflow/models/blob/master/research/audioset/vggish/vggish_params.py
-            log_offset = CommonParams.LOG_OFFSET
-            CommonParams.LOG_OFFSET = 0.01
-            try:
-                input_tensor = self.converter(
-                    audio_data.float(), self.sampling_rate
-                ).to(self.device)
-            finally:
-                CommonParams.LOG_OFFSET = log_offset
-
-            # Handle different tensor dimensions
-            if input_tensor.dim() == 4 and input_tensor.shape[1] == 3:
-                # [batch, 3, height, width] -> [batch, 1, height, width]
-                input_tensor = input_tensor.mean(dim=1, keepdim=True)
-            elif input_tensor.dim() == 3:
-                if input_tensor.shape[0] == 3:
-                    # [3, height, width] -> [1, 1, height, width]
-                    input_tensor = input_tensor.mean(dim=0, keepdim=True).unsqueeze(0)
-                else:
-                    # [batch, height, width] -> [batch, 1, height, width]
-                    input_tensor = input_tensor.unsqueeze(1)
-            elif input_tensor.dim() == 2:
-                # [height, width] -> [1, 1, height, width]
-                input_tensor = input_tensor.unsqueeze(0).unsqueeze(0)
+            log_mel = self._log_mel(audio_data.float().squeeze(0))
+            # [examples, mels, frames] -> [examples, 1, frames, mels]
+            patches = log_mel.unfold(0, self.patch_frames, self.patch_frames)
+            input_tensor = patches.transpose(1, 2).unsqueeze(1).to(self.device)
 
             return input_tensor
 
@@ -197,6 +193,41 @@ def vggish_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
             return self.get_audio_embeddings(inputs, **kwargs)
 
     return VGGishWrapper(**kwargs)
+
+
+def _spectrogram_to_mel_matrix(
+    num_mel_bins: int = 64,
+    num_spectrogram_bins: int = 257,
+    audio_sample_rate: float = 16000.0,
+    lower_edge_hertz: float = 125.0,
+    upper_edge_hertz: float = 7500.0,
+) -> np.ndarray:
+    """Port of vggish mel_features.spectrogram_to_mel_matrix (HTK mel, DC bin zeroed)."""
+
+    def hertz_to_mel(hertz: np.ndarray) -> np.ndarray:
+        return 1127.0 * np.log(1.0 + hertz / 700.0)
+
+    spectrogram_bins_hertz = np.linspace(
+        0.0, audio_sample_rate / 2.0, num_spectrogram_bins
+    )
+    spectrogram_bins_mel = hertz_to_mel(spectrogram_bins_hertz)[:, None]
+    band_edges_mel = np.linspace(
+        hertz_to_mel(lower_edge_hertz),
+        hertz_to_mel(upper_edge_hertz),
+        num_mel_bins + 2,
+    )
+    lower_edge_mel = band_edges_mel[:-2]
+    center_mel = band_edges_mel[1:-1]
+    upper_edge_mel = band_edges_mel[2:]
+    lower_slope = (spectrogram_bins_mel - lower_edge_mel) / (
+        center_mel - lower_edge_mel
+    )
+    upper_slope = (upper_edge_mel - spectrogram_bins_mel) / (
+        upper_edge_mel - center_mel
+    )
+    mel_weights_matrix = np.maximum(0.0, np.minimum(lower_slope, upper_slope))
+    mel_weights_matrix[0, :] = 0.0
+    return mel_weights_matrix
 
 
 vggish = ModelMeta(
