@@ -309,7 +309,10 @@ qwen3_vl_reranker_8b = ModelMeta(
     # "1_LogitScore/config.json" (renamed in the ST integration PR, path not updated), so every
     # sentence-transformers version builds LogitScore() without its token ids and fails.
     # https://huggingface.co/Qwen/Qwen3-VL-Reranker-8B/blob/b212dc8c91a8164aef1ea2de9c1a867611e75c04/modules.json
-    loader_kwargs={"module_paths": {"1_CausalScoreHead": "1_LogitScore"}},
+    loader_kwargs={
+        "module_paths": {"1_CausalScoreHead": "1_LogitScore"},
+        "video_frame_budget": True,
+    },
     name="Qwen/Qwen3-VL-Reranker-8B",
     model_type=["cross-encoder"],
     languages=QWEN3_VL_LANGUAGES,

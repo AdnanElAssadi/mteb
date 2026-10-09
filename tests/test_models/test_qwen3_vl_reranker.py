@@ -55,6 +55,15 @@ def test_8b_loads_score_head_from_shipped_folder(
     assert "1_CausalScoreHead" in (snapshot / "modules.json").read_text()
 
 
+@pytest.mark.parametrize(
+    "name", ["Qwen/Qwen3-VL-Reranker-2B", "Qwen/Qwen3-VL-Reranker-8B"]
+)
+def test_rerankers_use_per_frame_video_budget(name: str) -> None:
+    # the official script resizes every frame with qwen-vl-utils' per-frame budget
+    meta = mteb.get_model_meta(name)
+    assert (meta.loader_kwargs or {}).get("video_frame_budget") is True
+
+
 def test_2b_does_not_rewrite_modules() -> None:
     meta = mteb.get_model_meta("Qwen/Qwen3-VL-Reranker-2B")
     assert "module_paths" not in (meta.loader_kwargs or {})
