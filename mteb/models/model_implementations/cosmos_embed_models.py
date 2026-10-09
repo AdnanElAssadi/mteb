@@ -150,7 +150,11 @@ class CosmosEmbed1Model(AbsEncoder):
         has_video = "video" in inputs.dataset.features
 
         if has_video:
-            inputs.collate_fn = FramesCollator(num_frames=self.num_frames)
+            # np.linspace(0, len(reader) - 1, 8, dtype=int) on the model card
+            # https://huggingface.co/nvidia/Cosmos-Embed1-224p
+            inputs.collate_fn = FramesCollator(
+                num_frames=self.num_frames, frame_index_mode="linspace_floor"
+            )
 
         text_embeddings = None
         video_embeddings = None

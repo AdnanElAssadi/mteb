@@ -209,6 +209,12 @@ class LanguageBindVideoWrapper(_LanguageBindBase):
                 max_frames=self.max_frames,
                 num_frames=self.num_frames,
                 max_samples=self.max_samples,
+                # np.linspace(0, duration - 1, num_frames, dtype=int) in
+                # load_and_transform_video
+                # https://github.com/PKU-YuanGroup/LanguageBind/blob/main/languagebind/video/processing_video.py#L92-L100
+                frame_index_mode="linspace_floor",
+                # kaldi.fbank in the audio processor reads channel 0 of stereo audio
+                downmix="first",
             )
 
             for batch in tqdm(
@@ -316,7 +322,12 @@ class LanguageBindAudioWrapper(_LanguageBindBase):
 
         with torch.inference_mode():
             all_embeddings = []
-            inputs.collate_fn = AudioCollator(target_sampling_rate=self.sampling_rate)
+            inputs.collate_fn = AudioCollator(
+                target_sampling_rate=self.sampling_rate,
+                # torchaudio.compliance.kaldi.fbank in get_mel reads channel 0
+                # https://github.com/PKU-YuanGroup/LanguageBind/blob/main/languagebind/audio/processing_audio.py#L97-L100
+                downmix="first",
+            )
 
             for batch in tqdm(
                 inputs,

@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
     from mteb.abstasks.task_metadata import TaskMetadata
+    from mteb.models.modality_collators import FrameIndices
     from mteb.types import (
         Array,
         BatchedInput,
@@ -90,6 +91,7 @@ def _setup_modality_collator(
     num_frames: int | None,
     target_sampling_rate: int | None,
     max_samples: int | None,
+    frame_index_mode: FrameIndices = "default",
 ) -> bool:
     """Attach a VideoCollator/AudioCollator to ``inputs`` if needed.
 
@@ -108,6 +110,7 @@ def _setup_modality_collator(
             max_frames=max_frames,
             num_frames=num_frames,
             max_samples=max_samples,
+            frame_index_mode=frame_index_mode,
         )
     elif has_audio:
         from mteb.models.modality_collators import AudioCollator
@@ -386,6 +389,7 @@ class SentenceTransformerEncoderWrapper(AbsEncoder):
         num_frames: int | None = None,
         target_sampling_rate: int | None = None,
         max_samples: int | None = None,
+        frame_index_mode: FrameIndices = "default",
         **kwargs: Any,
     ) -> None:
         """Wrapper for SentenceTransformer models.
@@ -404,6 +408,7 @@ class SentenceTransformerEncoderWrapper(AbsEncoder):
             num_frames: If set, use fixed-sample mode instead of FPS-based (multimodal inputs only).
             target_sampling_rate: Sampling rate to resample audio to (multimodal inputs only). Defaults to 16000 when an audio/video collator is applied.
             max_samples: Maximum number of audio samples to keep (multimodal inputs only).
+            frame_index_mode: Which video frames to take, see `FrameIndexMode` (multimodal inputs only).
             **kwargs: Additional arguments to pass to the SentenceTransformer model.
         """
         from sentence_transformers import SentenceTransformer
@@ -446,6 +451,7 @@ class SentenceTransformerEncoderWrapper(AbsEncoder):
         self.num_frames = num_frames
         self.target_sampling_rate = target_sampling_rate
         self.max_samples = max_samples
+        self.frame_index_mode = frame_index_mode
 
     def similarity(self, embeddings1: Array, embeddings2: Array) -> Array:
         """Compute the similarity between two collections of embeddings."""
@@ -493,6 +499,7 @@ class SentenceTransformerEncoderWrapper(AbsEncoder):
             num_frames=self.num_frames,
             target_sampling_rate=self.target_sampling_rate,
             max_samples=self.max_samples,
+            frame_index_mode=self.frame_index_mode,
         )
         from sentence_transformers import __version__ as st_version
 

@@ -66,10 +66,14 @@ class VJepaV2Wrapper(AbsEncoder):
         import torch
 
         with torch.inference_mode():
+            # clips shorter than num_frames repeat their last frame, as the
+            # authors' loader does (VideoDataset.loadvideo_decord)
+            # https://github.com/facebookresearch/vjepa2/blob/main/src/datasets/video_dataset.py#L348-L361
             inputs.collate_fn = FramesCollator(
                 fps=self.fps,
                 max_frames=self.max_frames,
                 num_frames=self.num_frames,
+                frame_index_mode="pad_last",
             )
 
             embeddings = []

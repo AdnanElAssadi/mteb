@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import TYPE_CHECKING, Any
 
 from tqdm.auto import tqdm
@@ -403,6 +404,30 @@ _VLM2VEC2_TASK_PROMPTS: dict[str, dict[str, str]] = {
 }
 
 
+def _vlm2vec_frame_indices(
+    n_source: int, target: int, source_fps: float | None
+) -> list[int]:
+    """VLM2Vec's MMEB video pipeline, `save_frames` then `process_video_frames`.
+
+    It saves at most 64 frames, ``floor(i * n / 64)``, then takes
+    ``np.linspace(0, saved - 1, target, dtype=int)`` of them; clips with fewer
+    saved frames than ``target`` are used as they are, without padding.
+    https://github.com/TIGER-AI-Lab/VLM2Vec/blob/main/src/utils/vision_utils/vision_utils.py#L258-L310
+    (max_frames_saved=64, num_frames=8 in experiments/public/eval/video.yaml)
+    """
+    import numpy as np
+
+    max_saved = 64
+    if n_source <= max_saved:
+        saved = list(range(n_source))
+    else:
+        step = n_source / max_saved
+        saved = [math.floor(i * step) for i in range(max_saved)]
+    if len(saved) <= target:
+        return saved
+    return [saved[i] for i in np.linspace(0, len(saved) - 1, target, dtype=int)]
+
+
 class VLM2VEC2Wrapper(AbsEncoder):
     def __init__(
         self,
@@ -489,6 +514,7 @@ class VLM2VEC2Wrapper(AbsEncoder):
                     num_frames=self.num_frames,
                     fps=self.fps,
                     max_frames=self.max_frames,
+                    frame_index_mode=_vlm2vec_frame_indices,
                 )
 
             show_progress_bar = kwargs.get("show_progress_bar", True)

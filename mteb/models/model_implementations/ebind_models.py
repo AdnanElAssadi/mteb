@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 from tqdm.auto import tqdm
 
 from mteb.models.abs_encoder import AbsEncoder
-from mteb.models.modality_collators import AudioCollator, VideoCollator
+from mteb.models.modality_collators import AudioCollator, VideoCollator, frame_indices
 from mteb.models.model_meta import ModelMeta, ScoringFunction
 
 if TYPE_CHECKING:
@@ -15,6 +15,26 @@ if TYPE_CHECKING:
 
     from mteb import TaskMetadata
     from mteb.types import Array, BatchedInput, PromptType
+
+
+def _ebind_frame_indices(
+    n_source: int, target: int, source_fps: float | None
+) -> list[int]:
+    """EBind's `VideoTransform.load_video`: a 1 fps grid, then ``target`` of its points.
+
+    https://github.com/encord-team/ebind/blob/main/src/ebind/models/perception_encoder/transforms.py#L185-L209
+    Clips whose grid has fewer than ``target`` points take ``target`` frames over
+    the whole clip. Clips with fewer than ``target`` frames keep mteb's default
+    (the authors' zero-padding of those clips in `PEVideoProcessor` is not used).
+    """
+    if n_source < target:
+        return frame_indices(n_source, target)
+    stride = max(1, round(source_fps)) if source_fps else 1
+    grid = list(range(0, n_source, stride))
+    if len(grid) < target:
+        grid = list(range(n_source))
+    step = (len(grid) - 1) / (target - 1) if target > 1 else 0
+    return [grid[round(i * step)] for i in range(target)]
 
 
 class EBindWrapper(AbsEncoder):
@@ -169,10 +189,17 @@ class EBindWrapper(AbsEncoder):
                 fps=self.fps,
                 max_frames=self.max_frames,
                 num_frames=self.num_frames,
+                # https://github.com/encord-team/ebind/blob/main/src/ebind/models/perception_encoder/transforms.py
+                frame_index_mode=_ebind_frame_indices,
+                # kaldi.fbank in waveform2melspec reads channel 0 of stereo audio
+                # https://github.com/encord-team/ebind/blob/main/src/ebind/models/imagebind/data.py#L16-L20
+                downmix="first",
             )
         elif has_audio:
             inputs.collate_fn = AudioCollator(
                 target_sampling_rate=16_000,
+                # https://github.com/encord-team/ebind/blob/main/src/ebind/models/imagebind/data.py#L16-L20
+                downmix="first",
             )
 
         all_embeddings: list[torch.Tensor] = []

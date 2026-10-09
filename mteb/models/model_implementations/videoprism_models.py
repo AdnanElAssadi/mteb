@@ -86,10 +86,14 @@ class VideoPrismVisionWrapper(AbsEncoder):
         import torch
 
         with torch.inference_mode():
+            # np.linspace(0, len(frames), num_frames, endpoint=False, dtype=np.int32)
+            # in read_and_preprocess_video of the authors' colab
+            # https://github.com/google-deepmind/videoprism/blob/main/videoprism/colabs/videoprism_video_text_demo.ipynb
             inputs.collate_fn = FramesCollator(
                 fps=self.fps,
                 max_frames=self.max_frames,
                 num_frames=self.num_frames,
+                frame_index_mode="uniform",
             )
 
             all_embeddings = []
@@ -218,10 +222,14 @@ class VideoPrismClipWrapper(AbsEncoder):
         has_video = "video" in inputs.dataset.features
 
         if has_video:
+            # np.linspace(0, len(frames), num_frames, endpoint=False, dtype=np.int32)
+            # in read_and_preprocess_video of the authors' colab
+            # https://github.com/google-deepmind/videoprism/blob/main/videoprism/colabs/videoprism_video_text_demo.ipynb
             inputs.collate_fn = FramesCollator(
                 fps=self.fps,
                 max_frames=self.max_frames,
                 num_frames=self.num_frames,
+                frame_index_mode="uniform",
             )
 
         text_embeddings = None

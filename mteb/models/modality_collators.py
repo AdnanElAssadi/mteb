@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -27,28 +28,57 @@ log_once = LogOnce(logger)
 DEFAULT_MIN_FRAMES = 4
 DEFAULT_FRAME_FACTOR = 2
 
-FrameIndexMode = Literal["default", "linspace_round"]
+FrameIndexMode = Literal[
+    "default",
+    "linspace_round",
+    "linspace_floor",
+    "linspace_floor_no_pad",
+    "uniform",
+    "segment_middle",
+    "segment_middle_pad_last",
+    "pad_last",
+]
 """How a collator picks ``target`` frame indices from ``n_source`` frames.
+
+Wrappers pick the mode that matches their authors' sampler:
 
 - ``"default"``: ``round(linspace(0, n - 1, target))``; clips with fewer frames
   repeat each frame in place, ``floor(i * n / target)``.
 - ``"linspace_round"``: ``round(linspace(0, n - 1, target))`` for every clip,
   short clips included (e.g. VILA's video loader).
+- ``"linspace_floor"``: ``linspace(0, n - 1, target, dtype=int)`` for every clip.
+- ``"linspace_floor_no_pad"``: as ``"linspace_floor"``, but clips with at most
+  ``target`` frames keep all their frames (fewer than ``target``).
+- ``"uniform"``: ``linspace(0, n, target, endpoint=False, dtype=int32)``, i.e.
+  ``floor(i * n / target)``, for every clip.
+- ``"segment_middle"``: the middle frame of each of ``target`` equal segments,
+  ``int(i * n / target + n / (2 * target))`` (mmaction's test-mode SampleFrames).
+- ``"segment_middle_pad_last"``: the middle frame of each of ``min(n, target)``
+  segments, ``(start + end - 1) // 2``; clips with fewer frames are padded with
+  the last one (InternVideo2's ``get_frame_indices(sample="middle")``).
+- ``"pad_last"``: as ``"default"``, but clips with fewer frames take every frame,
+  then repeat the last one.
+
+A callable ``(n_source, target, source_fps) -> indices`` can be passed instead
+for samplers that need the clip's frame rate or keep fewer than ``target`` frames.
 """
+FrameSampler = Callable[[int, int, "float | None"], list[int]]
+FrameIndices = FrameIndexMode | FrameSampler
 
 
 def _linspace_round(n_source: int, target: int) -> list[int]:
     return [int(i) for i in np.linspace(0, n_source - 1, target).round()]
 
 
-def frame_indices(
-    n_source: int, target: int, mode: FrameIndexMode = "default"
-) -> list[int]:
-    """Indices of the frames to take from a clip of ``n_source`` frames, see `FrameIndexMode`."""
-    if mode == "linspace_round":
-        return _linspace_round(n_source, target)
-    if mode != "default":
-        raise ValueError(f"Unknown frame index mode {mode!r}")
+def _linspace_floor(n_source: int, target: int) -> list[int]:
+    return np.linspace(0, n_source - 1, target, dtype=int).tolist()
+
+
+def _uniform(n_source: int, target: int) -> list[int]:
+    return np.linspace(0, n_source, target, endpoint=False, dtype=np.int32).tolist()
+
+
+def _default(n_source: int, target: int) -> list[int]:
     if n_source < target:
         # repeat each frame in place (0, 0, 1, 1, ...) instead of looping
         # back to the start, as linspace-based upstream samplers do
@@ -59,6 +89,62 @@ def frame_indices(
     return _linspace_round(n_source, target)
 
 
+def _linspace_floor_no_pad(n_source: int, target: int) -> list[int]:
+    if n_source <= target:
+        return list(range(n_source))
+    return _linspace_floor(n_source, target)
+
+
+def _segment_middle(n_source: int, target: int) -> list[int]:
+    step = n_source / target
+    return [int(x) for x in (np.arange(target) * step + step / 2.0).astype(int)]
+
+
+def _segment_middle_pad_last(n_source: int, target: int) -> list[int]:
+    count = min(target, n_source)
+    bounds = np.linspace(0, n_source, count + 1).astype(int)
+    indices = [int(bounds[i] + bounds[i + 1] - 1) // 2 for i in range(count)]
+    return indices + [indices[-1]] * (target - count)
+
+
+def _pad_last(n_source: int, target: int) -> list[int]:
+    if n_source < target:
+        return list(range(n_source)) + [n_source - 1] * (target - n_source)
+    return _default(n_source, target)
+
+
+_FRAME_INDEX_MODES: dict[str, Callable[[int, int], list[int]]] = {
+    "default": _default,
+    "linspace_round": _linspace_round,
+    "linspace_floor": _linspace_floor,
+    "linspace_floor_no_pad": _linspace_floor_no_pad,
+    "uniform": _uniform,
+    "segment_middle": _segment_middle,
+    "segment_middle_pad_last": _segment_middle_pad_last,
+    "pad_last": _pad_last,
+}
+
+
+def frame_indices(
+    n_source: int,
+    target: int,
+    mode: FrameIndices = "default",
+    source_fps: float | None = None,
+) -> list[int]:
+    """Indices of the frames to take from a clip of ``n_source`` frames, see `FrameIndexMode`."""
+    if callable(mode):
+        return [int(i) for i in mode(n_source, target, source_fps)]
+    if mode not in _FRAME_INDEX_MODES:
+        raise ValueError(f"Unknown frame index mode {mode!r}")
+    return _FRAME_INDEX_MODES[mode](n_source, target)
+
+
+AudioDownmix = Literal["mean", "first"]
+"""How multi-channel audio is made mono: ``"mean"`` averages the channels,
+``"first"`` keeps channel 0 (e.g. ``torchaudio.compliance.kaldi.fbank``, which
+reads channel 0 of a stereo waveform)."""
+
+
 class AudioCollator:
     """Collator for audio data that resamples audio to a target sampling rate and optionally truncates to a maximum number of samples."""
 
@@ -67,15 +153,18 @@ class AudioCollator:
         *,
         target_sampling_rate: int,
         max_samples: int | None = None,
+        downmix: AudioDownmix = "mean",
     ) -> None:
         """Initialize the collator.
 
         Args:
             target_sampling_rate: The sampling rate to resample the audio to.
             max_samples: The maximum number of samples to keep for each audio. If None, no truncation is applied.
+            downmix: How multi-channel audio is made mono, see `AudioDownmix`.
         """
         self.target_sampling_rate = target_sampling_rate
         self.max_samples = max_samples
+        self.downmix = downmix
 
     def __call__(self, inputs: list[dict[str, Any]]) -> BatchedInput:
         """Collate a batch of audio inputs by resampling them to the target sampling rate and optionally truncating to a maximum number of samples."""
@@ -83,6 +172,7 @@ class AudioCollator:
             inputs,
             target_sampling_rate=self.target_sampling_rate,
             max_samples=self.max_samples,
+            downmix=self.downmix,
         )
 
     @staticmethod
@@ -91,6 +181,7 @@ class AudioCollator:
         *,
         target_sampling_rate: int,
         max_samples: int | None = None,
+        downmix: AudioDownmix = "mean",
     ) -> BatchedInput:
         """Resample a batch of audio inputs to a target sampling rate and optionally truncate to a maximum number of samples.
 
@@ -98,6 +189,7 @@ class AudioCollator:
             inputs: A list of dictionaries containing audio data under the "audio" key, where each audio is a dictionary with "array" and "sampling_rate" keys.
             target_sampling_rate: The sampling rate to resample the audio to.
             max_samples: The maximum number of samples to keep for each audio. If None, no truncation is applied.
+            downmix: How multi-channel audio is made mono, see `AudioDownmix`.
         """
         collated_inputs = []
         for row in inputs:
@@ -105,6 +197,7 @@ class AudioCollator:
                 row,
                 target_sampling_rate=target_sampling_rate,
                 max_samples=max_samples,
+                downmix=downmix,
             )
             row["audio"] = AudioInputItem(
                 array=audio_array, sampling_rate=target_sampling_rate
@@ -121,6 +214,7 @@ class AudioCollator:
         *,
         target_sampling_rate: int,
         max_samples: int | None = None,
+        downmix: AudioDownmix = "mean",
     ) -> np.typing.NDArray[np.floating]:
         """Resample an audio input to a target sampling rate and optionally truncate to a maximum number of samples.
 
@@ -128,6 +222,7 @@ class AudioCollator:
             audio: A list of dictionaries containing audio data under the "audio" key, where each audio is a dictionary with "array" and "sampling_rate" keys.
             target_sampling_rate: The sampling rate to resample the audio to.
             max_samples: The maximum number of samples to keep for each audio. If None, no truncation is applied.
+            downmix: How multi-channel audio is made mono, see `AudioDownmix`.
         """
         if max_samples is not None and max_samples <= 0:
             raise ValueError(f"max_samples must be positive, got {max_samples}.")
@@ -135,6 +230,11 @@ class AudioCollator:
         import torchaudio
 
         audio = audio["audio"]
+        if downmix == "first" and hasattr(audio, "get_all_samples"):
+            # datasets' AudioDecoder averages the channels in audio["array"]
+            array = audio.get_all_samples().data.cpu().numpy()[0]
+        else:
+            array = audio["array"]
         if audio["sampling_rate"] != target_sampling_rate:
             logger.debug(
                 f"Resampling audio from {audio['sampling_rate']} Hz to {target_sampling_rate} Hz."
@@ -143,15 +243,16 @@ class AudioCollator:
                 orig_freq=audio["sampling_rate"],
                 new_freq=target_sampling_rate,
             )
-            audio_array = resampler(
-                torch.from_numpy(np.asarray(audio["array"])).float()
-            ).numpy()
+            audio_array = resampler(torch.from_numpy(np.asarray(array)).float()).numpy()
         else:
-            audio_array = np.asarray(audio["array"])
+            audio_array = np.asarray(array)
 
         # Convert to mono if needed
         if audio_array.ndim > 1 and audio_array.shape[0] > 1:
-            audio_array = np.mean(audio_array, axis=0)
+            if downmix == "first":
+                audio_array = audio_array[0]
+            else:
+                audio_array = np.mean(audio_array, axis=0)
 
         if max_samples is not None:
             num_samples = audio_array.shape[-1]
@@ -249,7 +350,7 @@ class FramesCollator:
         num_frames: int | None = None,
         min_frames: int = DEFAULT_MIN_FRAMES,
         frame_factor: int = DEFAULT_FRAME_FACTOR,
-        frame_index_mode: FrameIndexMode = "default",
+        frame_index_mode: FrameIndices = "default",
     ) -> None:
         """Initialize the collator.
 
@@ -308,7 +409,7 @@ class FramesCollator:
         num_frames: int | None = None,
         min_frames: int = DEFAULT_MIN_FRAMES,
         frame_factor: int = DEFAULT_FRAME_FACTOR,
-        frame_index_mode: FrameIndexMode = "default",
+        frame_index_mode: FrameIndices = "default",
     ) -> torch.Tensor:
         """Resample a video input to a target number of frames.
 
@@ -349,7 +450,8 @@ class FramesCollator:
                 target = max(frame_factor, target - target % frame_factor)
             else:
                 raise RuntimeError("`fps` is not set; cannot use FPS-based sampling")
-            return frame_indices(n_source, target, frame_index_mode)
+            source_fps = getattr(video.metadata, "average_fps", None)
+            return frame_indices(n_source, target, frame_index_mode, source_fps)
 
         # Retry on the actual call: decrement source count when trailing
         # frames fail to decode.
@@ -390,7 +492,8 @@ class VideoCollator:
         max_samples: int | None = None,
         min_frames: int = DEFAULT_MIN_FRAMES,
         frame_factor: int = DEFAULT_FRAME_FACTOR,
-        frame_index_mode: FrameIndexMode = "default",
+        frame_index_mode: FrameIndices = "default",
+        downmix: AudioDownmix = "mean",
     ) -> None:
         """Initialize the collator.
 
@@ -404,6 +507,7 @@ class VideoCollator:
             frame_factor: In FPS-based sampling, round the frame count down to
                 a multiple of this.
             frame_index_mode: Which frames to take, see `FrameIndexMode`.
+            downmix: How multi-channel audio is made mono, see `AudioDownmix`.
         """
         self.fps = fps
         self.max_frames = max_frames
@@ -411,6 +515,7 @@ class VideoCollator:
         self.min_frames = min_frames
         self.frame_factor = frame_factor
         self.frame_index_mode = frame_index_mode
+        self.downmix = downmix
         self.target_sampling_rate = target_sampling_rate
         self.max_samples = max_samples
 
@@ -434,6 +539,7 @@ class VideoCollator:
                     row,
                     target_sampling_rate=self.target_sampling_rate,
                     max_samples=self.max_samples,
+                    downmix=self.downmix,
                 )
                 row["audio"] = AudioInputItem(
                     array=audio_array, sampling_rate=self.target_sampling_rate
