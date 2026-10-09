@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
     from mteb.abstasks.task_metadata import TaskMetadata
+    from mteb.models.modality_collators import AudioResampling
     from mteb.types import (
         Array,
         BatchedInput,
@@ -91,6 +92,7 @@ def _setup_modality_collator(
     target_sampling_rate: int | None,
     max_samples: int | None,
     video_metadata: bool = False,
+    resampling: AudioResampling = "kaiser_best",
 ) -> bool:
     """Attach a VideoCollator/AudioCollator to ``inputs`` if needed.
 
@@ -112,6 +114,7 @@ def _setup_modality_collator(
             num_frames=num_frames,
             max_samples=max_samples,
             with_metadata=video_metadata,
+            resampling=resampling,
         )
     elif has_audio:
         from mteb.models.modality_collators import AudioCollator
@@ -119,6 +122,7 @@ def _setup_modality_collator(
         inputs.collate_fn = AudioCollator(
             target_sampling_rate=target_sampling_rate or 16000,
             max_samples=max_samples,
+            resampling=resampling,
         )
     return has_video or has_audio or "image" in features
 
@@ -412,6 +416,7 @@ class SentenceTransformerEncoderWrapper(AbsEncoder):
         num_frames: int | None = None,
         target_sampling_rate: int | None = None,
         max_samples: int | None = None,
+        audio_resampling: AudioResampling = "kaiser_best",
         **kwargs: Any,
     ) -> None:
         """Wrapper for SentenceTransformer models.
@@ -430,6 +435,9 @@ class SentenceTransformerEncoderWrapper(AbsEncoder):
             num_frames: If set, use fixed-sample mode instead of FPS-based (multimodal inputs only).
             target_sampling_rate: Sampling rate to resample audio to (multimodal inputs only). Defaults to 16000 when an audio/video collator is applied.
             max_samples: Maximum number of audio samples to keep (multimodal inputs only).
+            audio_resampling: Audio resampling filter (multimodal inputs only). Use
+                "torchaudio_default" when the authors' reference passes file paths, which
+                transformers decodes and resamples with FFmpeg (torchcodec).
             **kwargs: Additional arguments to pass to the SentenceTransformer model.
         """
         from sentence_transformers import SentenceTransformer
@@ -472,6 +480,7 @@ class SentenceTransformerEncoderWrapper(AbsEncoder):
         self.num_frames = num_frames
         self.target_sampling_rate = target_sampling_rate
         self.max_samples = max_samples
+        self.audio_resampling = audio_resampling
 
     def similarity(self, embeddings1: Array, embeddings2: Array) -> Array:
         """Compute the similarity between two collections of embeddings."""
@@ -520,6 +529,7 @@ class SentenceTransformerEncoderWrapper(AbsEncoder):
             target_sampling_rate=self.target_sampling_rate,
             max_samples=self.max_samples,
             video_metadata=self.video_metadata,
+            resampling=self.audio_resampling,
         )
         from sentence_transformers import __version__ as st_version
 

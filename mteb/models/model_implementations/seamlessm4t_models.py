@@ -56,8 +56,11 @@ class SeamlessM4TWrapper(AbsEncoder):
     ) -> Array:
         import torch
 
+        # the model card resamples with torchaudio's default filter
         inputs.collate_fn = AudioCollator(
-            target_sampling_rate=self.sampling_rate, max_samples=self.max_samples
+            target_sampling_rate=self.sampling_rate,
+            max_samples=self.max_samples,
+            resampling="torchaudio_default",
         )
         all_embeddings = []
 
