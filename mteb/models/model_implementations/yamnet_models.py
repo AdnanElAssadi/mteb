@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import warnings
 from typing import TYPE_CHECKING, Any
 
@@ -52,9 +53,14 @@ def yamnet_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
             self.converter = WaveformToInput()
             self.sampling_rate = 16000  # YAMNet requires 16kHz audio
             self.embed_dim = 1024  # YAMNet embedding dimension
-            # 0.96 s patches
-            # https://arxiv.org/abs/1609.09430
-            self.min_samples = int(0.96 * self.sampling_rate)  # 15,360 samples
+            # official patching: 0.96 s patches with a 0.48 s hop, the waveform
+            # padded to one full patch and then to a whole number of hops
+            # https://github.com/tensorflow/models/blob/master/research/audioset/yamnet/features.py
+            self.patch_frames = 96  # 0.96 s of 10 ms frames
+            self.patch_hop_frames = 48  # 0.48 s
+            # one patch plus the STFT window minus one hop: 0.975 s
+            self.min_samples = round(0.975 * self.sampling_rate)  # 15,600
+            self.hop_samples = round(0.48 * self.sampling_rate)  # 7,680
 
         def _resample_audio(
             self, audio: torch.Tensor, source_rate: int
@@ -89,10 +95,11 @@ def yamnet_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
             if audio.numel() > 0 and audio.abs().max() > 1.0:
                 audio = audio / audio.abs().max()  # noqa: PLR6104
 
-            # Pad to minimum length
-            if audio.shape[-1] < self.min_samples:
-                pad_amount = self.min_samples - audio.shape[-1]
-                audio = torch.nn.functional.pad(audio, (0, pad_amount))
+            # Pad to one patch, then fill out the last hop (pad_waveform)
+            num_samples = max(audio.shape[-1], self.min_samples)
+            num_hops = math.ceil((num_samples - self.min_samples) / self.hop_samples)
+            target = self.min_samples + num_hops * self.hop_samples
+            audio = torch.nn.functional.pad(audio, (0, target - audio.shape[-1]))
 
             return audio
 
@@ -104,27 +111,15 @@ def yamnet_loader(*args: Any, **kwargs: Any) -> EncoderProtocol:
             if audio_data.ndim == 1:
                 audio_data = audio_data.unsqueeze(0)
 
-            input_tensor = self.converter(audio_data.float(), self.sampling_rate).to(
-                self.device
-            )
+            # [1, mels, frames] -> [frames, mels]; the port's own WaveformToInput
+            # cuts patches with a 0.96 s hop, so cut them here with 0.48 s
+            log_mel = self.converter.mel_trans_ope(audio_data.float()).squeeze(0).T
+            patches = log_mel.unfold(0, self.patch_frames, self.patch_hop_frames)
+            # [patches, mels, frames] -> [patches, 1, frames, mels]
+            input_tensor = patches.transpose(1, 2).unsqueeze(1).to(self.device)
 
             if input_tensor.numel() == 0:
                 return None
-
-            # Handle different tensor dimensions
-            if input_tensor.dim() == 4 and input_tensor.shape[0] == 2:
-                # [2, batch, height, width] -> [1, batch, height, width]
-                input_tensor = input_tensor.mean(dim=0, keepdim=True)
-            elif input_tensor.dim() == 3:
-                if input_tensor.shape[0] == 3:
-                    # [3, height, width] -> [1, 1, height, width]
-                    input_tensor = input_tensor.mean(dim=0, keepdim=True).unsqueeze(0)
-                else:
-                    # [batch, height, width] -> [batch, 1, height, width]
-                    input_tensor = input_tensor.unsqueeze(1)
-            elif input_tensor.dim() == 2:
-                # [height, width] -> [1, 1, height, width]
-                input_tensor = input_tensor.unsqueeze(0).unsqueeze(0)
 
             return input_tensor
 
