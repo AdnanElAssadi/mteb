@@ -33,8 +33,11 @@ class _StubDecoder:
         # evenly spaced over the whole clip, not just its head
         (15, 8, [0, 2, 4, 6, 8, 10, 12, 14]),
         (300, 8, [0, 43, 85, 128, 171, 214, 256, 299]),
-        # fewer source frames than requested: repeat to reach the count
-        (5, 8, [0, 1, 2, 3, 4, 0, 1, 2]),
+        # fewer source frames than requested: repeat each frame in place
+        (5, 8, [0, 0, 1, 1, 2, 3, 3, 4]),
+        (3, 8, [0, 0, 0, 1, 1, 1, 2, 2]),
+        (1, 4, [0, 0, 0, 0]),
+        (16, 16, list(range(16))),
     ],
 )
 def test_resample_video_fixed_frames(
@@ -52,6 +55,45 @@ def test_resample_video_fps_spans_clip_and_respects_cap() -> None:
     assert frames[-1] == 299
     capped = FramesCollator.resample_video(video, fps=2.0, max_frames=8)
     assert capped == [0, 43, 85, 128, 171, 214, 256, 299]
+
+
+@pytest.mark.parametrize(
+    ("n_source", "seconds", "fps", "max_frames", "expected"),
+    [
+        # under 2 s at 1 fps: 4 frames, not 1 (a Qwen3-VL processor needs >= 2)
+        (11, 0.37, 1.0, 64, [0, 3, 7, 10]),
+        (30, 1.2, 2.0, 64, [0, 10, 19, 29]),
+        # odd counts are rounded down to even
+        (146, 6.09, 0.5, 64, [0, 48, 97, 145]),
+        (75, 2.5, 2.0, 64, [0, 25, 49, 74]),
+        # fewer source frames than the minimum: keep an even count
+        (3, 0.1, 2.0, 64, [0, 2]),
+        (1, 0.04, 2.0, 64, [0, 0]),
+    ],
+)
+def test_resample_video_fps_min_and_even_frames(
+    n_source: int,
+    seconds: float,
+    fps: float,
+    max_frames: int,
+    expected: list[int],
+) -> None:
+    video = _StubDecoder(n_source, seconds=seconds)
+    frames = FramesCollator.resample_video(video, fps=fps, max_frames=max_frames)
+    assert frames == expected
+
+
+def test_resample_video_fps_odd_count_rounded_down() -> None:
+    video = _StubDecoder(1350, seconds=45.0)
+    assert len(FramesCollator.resample_video(video, fps=1.0, max_frames=64)) == 44
+    assert len(FramesCollator.resample_video(video, fps=1.0, max_frames=33)) == 32
+
+
+def test_resample_video_fps_without_min_frames() -> None:
+    """Re-encoding callers (API models) opt out to keep the clip duration."""
+    video = _StubDecoder(11, seconds=0.37)
+    frames = FramesCollator.resample_video(video, fps=1.0, min_frames=1, frame_factor=1)
+    assert frames == [0]
 
 
 def test_resample_video_without_sampling_keeps_all_frames() -> None:
