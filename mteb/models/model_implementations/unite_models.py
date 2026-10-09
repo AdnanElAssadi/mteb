@@ -163,12 +163,15 @@ class UniteWrapper(AbsEncoder):
         )
 
         # UNITE's reference inference caps video at 360*420 via qwen_vl_utils, well
-        # below the image budget. tf>=5 exposes this as video_processor.size; on
+        # below the image budget, and upscales small frames to qwen_vl_utils'
+        # VIDEO_MIN_PIXELS=128*28*28. tf>=5 exposes this as video_processor.size; on
         # older versions the video branch shares the image processor settings.
+        # https://github.com/friedrichor/UNITE/blob/main/unite/model/qwen_vl_utils/vision_process.py
         vp = getattr(self.processor, "video_processor", None)
         if vp is not None:
             size = dict(getattr(vp, "size", None) or {})
             size["longest_edge"] = video_max_pixels
+            size["shortest_edge"] = 128 * 28 * 28
             vp.size = size
 
     @staticmethod
