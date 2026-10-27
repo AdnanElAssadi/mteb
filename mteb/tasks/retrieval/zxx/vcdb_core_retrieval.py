@@ -1,7 +1,35 @@
 from __future__ import annotations
 
+from typing import Any
+
 from mteb.abstasks.retrieval import AbsTaskRetrieval
 from mteb.abstasks.task_metadata import TaskMetadata
+
+# a video that can't be decoded ("Invalid data found when processing input"); every
+# query it is relevant to has other relevant copies of the same clip
+_BROKEN_VIDEO_IDS = {
+    "beckham_70_yard_goal/ab12206048207553294916664d0ebf1cd9e81ef6.flv"
+}
+
+
+def _drop_broken_videos(task: AbsTaskRetrieval, num_proc: int | None) -> None:
+    for subset in task.dataset.values():
+        for split in subset.values():
+            for side in ("queries", "corpus"):
+                split[side] = split[side].filter(
+                    lambda video_id: video_id not in _BROKEN_VIDEO_IDS,
+                    input_columns="id",
+                    num_proc=num_proc,
+                )
+            split["relevant_docs"] = {
+                query_id: {
+                    doc_id: score
+                    for doc_id, score in docs.items()
+                    if doc_id not in _BROKEN_VIDEO_IDS
+                }
+                for query_id, docs in split["relevant_docs"].items()
+                if query_id not in _BROKEN_VIDEO_IDS
+            }
 
 
 class VCDBCoreRetrieval(AbsTaskRetrieval):
@@ -54,6 +82,9 @@ class VCDBCoreRetrieval(AbsTaskRetrieval):
             )
         },
     )
+
+    def dataset_transform(self, num_proc: int | None = None, **kwargs: Any) -> None:
+        _drop_broken_videos(self, num_proc)
 
 
 class VCDBCoreAudioVideoRetrieval(AbsTaskRetrieval):
@@ -108,3 +139,6 @@ class VCDBCoreAudioVideoRetrieval(AbsTaskRetrieval):
             )
         },
     )
+
+    def dataset_transform(self, num_proc: int | None = None, **kwargs: Any) -> None:
+        _drop_broken_videos(self, num_proc)

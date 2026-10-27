@@ -1,52 +1,52 @@
 {
     "test": {
-        "num_samples": 1056,
-        "num_queries": 528,
-        "num_documents": 528,
+        "num_samples": 1054,
+        "num_queries": 527,
+        "num_documents": 527,
         "number_of_characters": 0,
         "documents_text_statistics": null,
         "documents_image_statistics": null,
         "documents_audio_statistics": null,
         "documents_video_statistics": {
-            "total_duration_seconds": 96939.95176532162,
-            "total_frames": 2606997,
+            "total_duration_seconds": 96906.76110415497,
+            "total_frames": 2605846,
             "min_width": 176,
-            "average_width": 542.3219696969697,
+            "average_width": 542.4402277039849,
             "max_width": 1920,
             "min_height": 132,
-            "average_height": 358.405303030303,
+            "average_height": 358.4022770398482,
             "max_height": 1080,
-            "min_duration_seconds": 2.974293059125964,
-            "average_duration_seconds": 183.5983934949273,
+            "min_duration_seconds": 2.974,
+            "average_duration_seconds": 183.88379716158437,
             "max_duration_seconds": 2662.36,
-            "unique_videos": 528,
-            "average_fps": 26.867424242424242,
+            "unique_videos": 462,
+            "average_fps": 26.84819734345351,
             "fps": {
-                "30": 296,
+                "30": 295,
                 "25": 139,
                 "26": 1,
                 "10": 1,
-                "12": 5,
+                "12": 13,
                 "6": 2,
                 "15": 18,
                 "24": 47,
                 "28": 2,
-                "13": 9,
                 "14": 1,
                 "21": 1,
                 "18": 1,
                 "20": 2,
                 "29": 1,
                 "8": 1,
-                "22": 1
+                "23": 1,
+                "13": 1
             },
             "min_resolution": [
                 176,
                 132
             ],
             "average_resolution": [
-                542.3219696969697,
-                358.405303030303
+                542.4402277039849,
+                358.4022770398482
             ],
             "max_resolution": [
                 1920,
@@ -54,7 +54,7 @@
             ],
             "resolutions": {
                 "352x264": 1,
-                "480x360": 100,
+                "480x360": 99,
                 "352x288": 12,
                 "400x300": 3,
                 "320x240": 99,
@@ -136,45 +136,45 @@
         "queries_image_statistics": null,
         "queries_audio_statistics": null,
         "queries_video_statistics": {
-            "total_duration_seconds": 96939.95176532162,
-            "total_frames": 2606997,
+            "total_duration_seconds": 96906.76110415497,
+            "total_frames": 2605846,
             "min_width": 176,
-            "average_width": 542.3219696969697,
+            "average_width": 542.4402277039849,
             "max_width": 1920,
             "min_height": 132,
-            "average_height": 358.405303030303,
+            "average_height": 358.4022770398482,
             "max_height": 1080,
-            "min_duration_seconds": 2.974293059125964,
-            "average_duration_seconds": 183.5983934949273,
+            "min_duration_seconds": 2.974,
+            "average_duration_seconds": 183.88379716158437,
             "max_duration_seconds": 2662.36,
-            "unique_videos": 528,
-            "average_fps": 26.867424242424242,
+            "unique_videos": 462,
+            "average_fps": 26.84819734345351,
             "fps": {
-                "30": 296,
+                "30": 295,
                 "25": 139,
                 "26": 1,
                 "10": 1,
-                "12": 5,
+                "12": 13,
                 "6": 2,
                 "15": 18,
                 "24": 47,
                 "28": 2,
-                "13": 9,
                 "14": 1,
                 "21": 1,
                 "18": 1,
                 "20": 2,
                 "29": 1,
                 "8": 1,
-                "22": 1
+                "23": 1,
+                "13": 1
             },
             "min_resolution": [
                 176,
                 132
             ],
             "average_resolution": [
-                542.3219696969697,
-                358.405303030303
+                542.4402277039849,
+                358.4022770398482
             ],
             "max_resolution": [
                 1920,
@@ -182,7 +182,7 @@
             ],
             "resolutions": {
                 "352x264": 1,
-                "480x360": 100,
+                "480x360": 99,
                 "352x288": 12,
                 "400x300": 3,
                 "320x240": 99,
@@ -261,11 +261,14 @@
             }
         },
         "relevant_docs_statistics": {
-            "num_relevant_docs": 11220,
+            "num_relevant_docs": 11174,
             "min_relevant_docs_per_query": 1,
-            "average_relevant_docs_per_query": 21.25,
+            "average_relevant_docs_per_query": 21.20303605313093,
             "max_relevant_docs_per_query": 42,
-            "unique_relevant_docs": 528
+            "unique_relevant_docs": 527,
+            "num_missing_query_ids": 0,
+            "num_missing_corpus_ids": 0,
+            "queries_with_all_gold_black_or_white": 0
         },
         "top_ranked_statistics": null
     }
