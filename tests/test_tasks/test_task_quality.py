@@ -1054,6 +1054,8 @@ KNOWN_ISSUES: dict[str, list[str]] = {
         "XModBenchVT2AReranking",
     ],
     "duplicate_video": [
+        "VCDBCoreAudioVideoRetrieval",  # copy-detection data: some copies are identical uploads of the same video
+        "VCDBCoreRetrieval",  # copy-detection data: some copies are identical uploads of the same video
         "ChinaOpenT2VRetrieval",  # same 1,092 videos evaluated once per language subset (zho-Hans/eng-Latn)
         "ChinaOpenV2TRetrieval",  # same 1,092 videos evaluated once per language subset (zho-Hans/eng-Latn)
         "DenseWebVidCoVRVT2VRetrieval",  # multiple rows have same video with different instruction
